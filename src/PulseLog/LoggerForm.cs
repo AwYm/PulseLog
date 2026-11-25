@@ -7,6 +7,7 @@ namespace HeartRateLogger;
 internal sealed partial class LoggerForm : Form
 {
     private const int ImmersiveDarkModeAttribute = 20;
+    private const int SettingToggleWidth = 112;
 
     private static readonly ThemePalette DarkPalette = new(
         Canvas: Color.FromArgb(17, 25, 23),
@@ -47,17 +48,8 @@ internal sealed partial class LoggerForm : Form
     private readonly Label _settingsStatus;
     private readonly RadioButton _dashboardTab = MakeTab("Dashboard");
     private readonly RadioButton _settingsTab = MakeTab("Settings");
-    private readonly CheckBox _closeToTray = new()
-    {
-        Text = "Close to tray",
-        AutoSize = true,
-        Anchor = AnchorStyles.Right,
-        FlatStyle = FlatStyle.Flat,
-        UseVisualStyleBackColor = false,
-        Font = new Font("Segoe UI", 9.5f),
-        Margin = Padding.Empty
-    };
-    private readonly Button _themeToggle = MakeButton("Light mode");
+    private readonly CheckBox _closeToTray = MakeSettingToggle("Close to tray");
+    private readonly CheckBox _themeToggle = MakeSettingToggle("Dark mode");
     private readonly Button _scan = MakeButton("Scan");
     private readonly Button _connect = MakeButton("Connect");
     private readonly Button _recording = MakeButton("Pause recording");
@@ -79,14 +71,14 @@ internal sealed partial class LoggerForm : Form
     private bool _exporting;
     private bool _recordingPaused;
     private bool _hasLiveReading;
-    private bool _darkMode = true;
     private volatile bool _closing;
     private string? _connectedName;
     private long _sampleCount;
     private int _minBpm;
     private int _maxBpm;
     private double _meanBpm;
-    private ThemePalette Palette => _darkMode ? DarkPalette : LightPalette;
+    private bool DarkMode => _themeToggle.Checked;
+    private ThemePalette Palette => DarkMode ? DarkPalette : LightPalette;
 
     internal LoggerForm()
     {
@@ -96,6 +88,7 @@ internal sealed partial class LoggerForm : Form
         _minimum = MakeLabel(17, FontStyle.Bold);
         _maximum = MakeLabel(17, FontStyle.Bold);
         _average = MakeLabel(17, FontStyle.Bold);
+        _themeToggle.Checked = true;
         Text = "Pulse Log";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
         StartPosition = FormStartPosition.CenterScreen;
@@ -124,6 +117,7 @@ internal sealed partial class LoggerForm : Form
         _closeToTray.Checked = TrayPreference.Load();
         _closeToTray.CheckedChanged += (_, _) =>
         {
+            StyleSettingToggle(_closeToTray);
             try
             {
                 TrayPreference.Save(_closeToTray.Checked);
@@ -135,11 +129,7 @@ internal sealed partial class LoggerForm : Form
             }
         };
 
-        _themeToggle.Click += (_, _) =>
-        {
-            _darkMode = !_darkMode;
-            ApplyTheme();
-        };
+        _themeToggle.CheckedChanged += (_, _) => ApplyTheme();
         _scan.Click += async (_, _) => await ScanAsync();
         _connect.Click += async (_, _) =>
         {
@@ -186,16 +176,16 @@ internal sealed partial class LoggerForm : Form
             AccessibleRole = AccessibleRole.PageTabList,
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 7, 0, 4),
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1
         };
-        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
-        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
-        _dashboardTab.Margin = new Padding(0, 0, 6, 0);
+        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 6));
+        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
         _dashboardTab.CheckedChanged += (_, _) => StyleChoiceButton(_dashboardTab);
         _settingsTab.CheckedChanged += (_, _) => StyleChoiceButton(_settingsTab);
         tabs.Controls.Add(_dashboardTab, 0, 0);
-        tabs.Controls.Add(_settingsTab, 1, 0);
+        tabs.Controls.Add(_settingsTab, 2, 0);
         _dashboardTab.Checked = true;
         header.Controls.Add(tabs, 1, 0);
         return header;
@@ -260,18 +250,18 @@ internal sealed partial class LoggerForm : Form
         var appearance = MakeCard(2, 1);
         appearance.Padding = new Padding(16, 12, 16, 12);
         appearance.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        appearance.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-        appearance.Controls.Add(MakeLabel(11, FontStyle.Bold, "Appearance"), 0, 0);
+        appearance.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SettingToggleWidth));
+        appearance.Controls.Add(MakeLabel(11, FontStyle.Bold, "Dark mode"), 0, 0);
         appearance.Controls.Add(_themeToggle, 1, 0);
         settings.Controls.Add(appearance, 0, 0);
 
         var window = MakeCard(2, 2);
         window.Padding = new Padding(16, 10, 16, 10);
         window.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        window.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        window.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, SettingToggleWidth));
         window.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         window.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        window.Controls.Add(MakeLabel(11, FontStyle.Bold, "Window behavior"), 0, 0);
+        window.Controls.Add(MakeLabel(11, FontStyle.Bold, "Close to tray"), 0, 0);
         window.Controls.Add(MakeLabel(9.5f, FontStyle.Regular, "Hide Pulse Log in the system tray when you click X.", LabelTone.Muted), 0, 1);
         window.Controls.Add(_closeToTray, 1, 0);
         window.SetRowSpan(_closeToTray, 2);
@@ -819,18 +809,13 @@ internal sealed partial class LoggerForm : Form
         StyleChoiceButton(_settingsTab);
         foreach (var combo in new[] { _devices, _chartWindow })
         {
-            combo.ApplyTheme(palette, _darkMode);
+            combo.ApplyTheme(palette, DarkMode);
         }
-        _themeToggle.Text = _darkMode ? "Light mode" : "Dark mode";
-        _closeToTray.BackColor = palette.Canvas;
-        _closeToTray.ForeColor = palette.Ink;
-        _closeToTray.FlatAppearance.BorderColor = palette.Border;
-        _closeToTray.FlatAppearance.CheckedBackColor = palette.Tint;
-        _closeToTray.FlatAppearance.MouseOverBackColor = palette.Surface;
-        _closeToTray.FlatAppearance.MouseDownBackColor = palette.Tint;
+        StyleSettingToggle(_themeToggle);
+        StyleSettingToggle(_closeToTray);
         ApplyButtonTheme();
-        _hero.SetDarkMode(_darkMode);
-        _chart.SetDarkMode(_darkMode);
+        _hero.SetDarkMode(DarkMode);
+        _chart.SetDarkMode(DarkMode);
         _hints.BackColor = palette.Surface;
         _hints.ForeColor = palette.Ink;
         ApplyTrayTheme();
@@ -839,7 +824,6 @@ internal sealed partial class LoggerForm : Form
 
     private void ApplyButtonTheme()
     {
-        StyleButton(_themeToggle);
         StyleButton(_scan);
         StyleButton(_connect, primary: true);
         StyleButton(_recording);
@@ -858,12 +842,20 @@ internal sealed partial class LoggerForm : Form
         button.FlatAppearance.MouseDownBackColor = accent ? palette.PrimaryPressed : palette.Tint;
     }
 
-    private void StyleChoiceButton(RadioButton button)
+    private void StyleSettingToggle(CheckBox toggle)
+    {
+        toggle.Text = toggle.Checked ? "On" : "Off";
+        StyleChoiceButton(toggle, toggle.Checked);
+    }
+
+    private void StyleChoiceButton(RadioButton button) => StyleChoiceButton(button, button.Checked);
+
+    private void StyleChoiceButton(ButtonBase button, bool selected)
     {
         var palette = Palette;
-        button.BackColor = button.Checked ? palette.Tint : palette.Surface;
-        button.ForeColor = button.Checked ? palette.Accent : palette.Ink;
-        button.FlatAppearance.BorderColor = button.Checked ? palette.Accent : palette.Border;
+        button.BackColor = selected ? palette.Tint : palette.Surface;
+        button.ForeColor = selected ? palette.Accent : palette.Ink;
+        button.FlatAppearance.BorderColor = selected ? palette.Accent : palette.Border;
         button.FlatAppearance.CheckedBackColor = palette.Tint;
         button.FlatAppearance.MouseOverBackColor = palette.Canvas;
         button.FlatAppearance.MouseDownBackColor = palette.Tint;
@@ -958,7 +950,7 @@ internal sealed partial class LoggerForm : Form
     {
         if (IsHandleCreated)
         {
-            var enabled = _darkMode ? 1 : 0;
+            var enabled = DarkMode ? 1 : 0;
             DwmSetWindowAttribute(Handle, ImmersiveDarkModeAttribute, ref enabled, sizeof(int));
         }
     }
@@ -1059,6 +1051,19 @@ internal sealed partial class LoggerForm : Form
         AccessibleRole = AccessibleRole.PageTab,
         Appearance = Appearance.Button,
         Dock = DockStyle.Fill,
+        Margin = Padding.Empty,
+        FlatStyle = FlatStyle.Flat,
+        TextAlign = ContentAlignment.MiddleCenter,
+        UseVisualStyleBackColor = false,
+        Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+    };
+
+    private static CheckBox MakeSettingToggle(string name) => new()
+    {
+        AccessibleName = name,
+        Appearance = Appearance.Button,
+        Anchor = AnchorStyles.Right,
+        Size = new Size(SettingToggleWidth, 36),
         Margin = Padding.Empty,
         FlatStyle = FlatStyle.Flat,
         TextAlign = ContentAlignment.MiddleCenter,
