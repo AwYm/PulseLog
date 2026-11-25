@@ -7,6 +7,7 @@ internal sealed partial class LoggerForm
     private ToolStripMenuItem? _trayRecording;
     private FormWindowState _trayRestoreWindowState = FormWindowState.Normal;
     private bool _restoringFromTray;
+    private bool _exitRequested;
 
     private void InitializeTray()
     {
@@ -17,7 +18,7 @@ internal sealed partial class LoggerForm
 
         var open = new ToolStripMenuItem("Open Pulse Log", null, (_, _) => RestoreFromTray());
         _trayRecording = new ToolStripMenuItem("Pause recording", null, (_, _) => ToggleRecording());
-        var exit = new ToolStripMenuItem("Exit Pulse Log", null, (_, _) => Close());
+        var exit = new ToolStripMenuItem("Exit Pulse Log", null, (_, _) => ExitFromTray());
         _trayMenu = new ContextMenuStrip { ShowImageMargin = false };
         _trayMenu.Items.AddRange([open, _trayRecording, new ToolStripSeparator(), exit]);
         _trayMenu.Opening += (_, _) => RefreshTray();
@@ -112,6 +113,19 @@ internal sealed partial class LoggerForm
         }
 
         Activate();
+    }
+
+    private void ExitFromTray()
+    {
+        _exitRequested = true;
+        try
+        {
+            Close();
+        }
+        finally
+        {
+            _exitRequested = false;
+        }
     }
 
     private void DisposeTray()

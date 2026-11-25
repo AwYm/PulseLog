@@ -44,6 +44,16 @@ internal sealed partial class LoggerForm : Form
     private readonly List<RadioButton> _chartModes = new();
     private readonly Label _deviceStatus;
     private readonly Label _fileStatus;
+    private readonly CheckBox _closeToTray = new()
+    {
+        Text = "Close to tray",
+        AutoSize = true,
+        Anchor = AnchorStyles.Right,
+        FlatStyle = FlatStyle.Flat,
+        UseVisualStyleBackColor = false,
+        Font = new Font("Segoe UI", 9.5f),
+        Margin = new Padding(0, 7, 14, 4)
+    };
     private readonly Button _themeToggle = MakeButton("Light mode");
     private readonly Button _scan = MakeButton("Scan");
     private readonly Button _connect = MakeButton("Connect");
@@ -113,6 +123,19 @@ internal sealed partial class LoggerForm : Form
         layout.Controls.Add(BuildFooter(), 0, 4);
         Controls.Add(layout);
         InitializeTray();
+        _closeToTray.Checked = TrayPreference.Load();
+        _hints.SetToolTip(_closeToTray, "Use the X button to hide the window in the system tray.");
+        _closeToTray.CheckedChanged += (_, _) =>
+        {
+            try
+            {
+                TrayPreference.Save(_closeToTray.Checked);
+            }
+            catch (Exception error) when (IsFileError(error))
+            {
+                SetFileStatus($"Could not save Close to tray. {DescribeStorageError(error)}", error: true);
+            }
+        };
 
         _themeToggle.Click += (_, _) =>
         {
@@ -149,17 +172,19 @@ internal sealed partial class LoggerForm : Form
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 7),
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 2
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
         header.Controls.Add(MakeLabel(30, FontStyle.Bold, "Pulse Log"), 0, 0);
         header.Controls.Add(MakeLabel(10.5f, FontStyle.Regular, "Bluetooth heart rate logger", LabelTone.Muted), 0, 1);
         _themeToggle.Margin = new Padding(0, 7, 0, 4);
-        header.Controls.Add(_themeToggle, 1, 0);
+        header.Controls.Add(_closeToTray, 1, 0);
+        header.Controls.Add(_themeToggle, 2, 0);
         return header;
     }
 
@@ -703,6 +728,12 @@ internal sealed partial class LoggerForm : Form
             combo.ApplyTheme(palette, _darkMode);
         }
         _themeToggle.Text = _darkMode ? "Light mode" : "Dark mode";
+        _closeToTray.BackColor = palette.Canvas;
+        _closeToTray.ForeColor = palette.Ink;
+        _closeToTray.FlatAppearance.BorderColor = palette.Border;
+        _closeToTray.FlatAppearance.CheckedBackColor = palette.Tint;
+        _closeToTray.FlatAppearance.MouseOverBackColor = palette.Surface;
+        _closeToTray.FlatAppearance.MouseDownBackColor = palette.Tint;
         ApplyButtonTheme();
         _hero.SetDarkMode(_darkMode);
         _chart.SetDarkMode(_darkMode);
@@ -846,6 +877,14 @@ internal sealed partial class LoggerForm : Form
         base.OnFormClosing(e);
         if (e.Cancel || _closing)
         {
+            return;
+        }
+
+        if (e.CloseReason == CloseReason.UserClosing && _closeToTray.Checked && !_exitRequested &&
+            _trayIcon is { Visible: true })
+        {
+            e.Cancel = true;
+            Hide();
             return;
         }
 
