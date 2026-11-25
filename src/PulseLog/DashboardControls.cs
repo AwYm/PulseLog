@@ -125,6 +125,14 @@ public sealed class HeartRateHero : Control
     }
 }
 
+public enum HeartRateChartMode
+{
+    Maximum,
+    Minimum,
+    Range,
+    Average
+}
+
 public sealed class HeartRateChart : Control
 {
     private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(1);
@@ -136,16 +144,22 @@ public sealed class HeartRateChart : Control
     private static readonly Color Border = Color.FromArgb(219, 230, 221);
     private static readonly Color Grid = Color.FromArgb(231, 239, 233);
     private static readonly Color Green = Color.FromArgb(22, 129, 104);
+    private static readonly Color RangeLower = Color.FromArgb(86, 138, 119);
 
-    private readonly SortedList<DateTimeOffset, ChartReading> readings = new();
+    private readonly SortedList<(DateTimeOffset Timestamp, long Sequence), ChartReading> readings = new();
     private readonly Font titleFont = new("Segoe UI Semibold", 20, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font labelFont = new("Segoe UI", 11, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font axisFont = new("Segoe UI Semibold", 10, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font emptyFont = new("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel);
     private TimeSpan visibleWindow = TimeSpan.FromMinutes(2);
+    private HeartRateChartMode mode = HeartRateChartMode.Range;
     private int trace;
+    private long nextSequence;
 
     private readonly record struct ChartReading(int Bpm, int Trace);
+    private readonly record struct ChartBucket(
+        DateTimeOffset FirstTimestamp, DateTimeOffset LastTimestamp,
+        int Minimum, int Maximum, double Average, bool StartsTrace);
 
     public HeartRateChart()
     {
@@ -172,11 +186,21 @@ public sealed class HeartRateChart : Control
         Invalidate();
     }
 
+    public void SetMode(HeartRateChartMode chartMode)
+    {
+        if (mode == chartMode)
+            return;
+
+        mode = chartMode;
+        UpdateAccessibleDescription();
+        Invalidate();
+    }
+
     public void AddReading(DateTimeOffset timestamp, int bpm)
     {
-        readings[timestamp] = new ChartReading(bpm, trace);
-        DateTimeOffset latest = readings.Keys[^1];
-        while (latest - readings.Keys[0] > RetentionWindow)
+        readings.Add((timestamp, nextSequence++), new ChartReading(bpm, trace));
+        DateTimeOffset latest = readings.Keys[^1].Timestamp;
+        while (latest - readings.Keys[0].Timestamp > RetentionWindow)
             readings.RemoveAt(0);
 
         Invalidate();
@@ -188,6 +212,7 @@ public sealed class HeartRateChart : Control
     {
         readings.Clear();
         trace = 0;
+        nextSequence = 0;
         Invalidate();
     }
 
@@ -196,7 +221,30 @@ public sealed class HeartRateChart : Control
         string duration = visibleWindow == TimeSpan.FromMinutes(1)
             ? "1 minute"
             : $"{visibleWindow.TotalMinutes:0.##} minutes";
-        AccessibleDescription = $"Heart rate in beats per minute over the latest {duration} of recorded history.";
+        string displayed = mode switch
+        {
+            HeartRateChartMode.Maximum => "Maximum heart rate",
+            HeartRateChartMode.Minimum => "Minimum heart rate",
+            HeartRateChartMode.Average => "Average heart rate",
+            _ => "Minimum and maximum heart rate with a shaded range"
+        };
+        AccessibleDescription = $"{displayed} in beats per minute, using {IntervalLabel()} over the latest {duration}.";
+    }
+
+    private TimeSpan BucketDuration() => TimeSpan.FromSeconds(visibleWindow.TotalMinutes switch
+    {
+        <= 1 => 5,
+        <= 2 => 10,
+        <= 5 => 15,
+        <= 15 => 30,
+        <= 30 => 60,
+        _ => 120
+    });
+
+    private string IntervalLabel()
+    {
+        TimeSpan duration = BucketDuration();
+        return duration.TotalMinutes >= 1 ? $"{duration.TotalMinutes:0} min intervals" : $"{duration.TotalSeconds:0} s intervals";
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -223,13 +271,13 @@ public sealed class HeartRateChart : Control
         RectangleF plot = RectangleF.FromLTRB(55, 67, width - 25, height - 33);
         if (plot.Width >= 30 && plot.Height >= 16)
         {
-            int firstVisible = FirstVisibleIndex();
-            (double lower, double upper, double step) = AxisRange(firstVisible);
+            List<ChartBucket> buckets = BuildBuckets(FirstVisibleIndex());
+            (double lower, double upper, double step) = AxisRange(buckets);
             DrawGrid(graphics, plot, lower, upper, step);
-            if (readings.Count == 0)
+            if (buckets.Count == 0)
                 DrawEmptyState(graphics, plot);
             else
-                DrawReadings(graphics, plot, lower, upper, firstVisible);
+                DrawReadings(graphics, plot, lower, upper, buckets);
         }
 
         graphics.Restore(state);
@@ -240,14 +288,14 @@ public sealed class HeartRateChart : Control
         if (readings.Count == 0)
             return 0;
 
-        IList<DateTimeOffset> timestamps = readings.Keys;
-        DateTimeOffset latest = timestamps[^1];
+        var times = readings.Keys;
+        DateTimeOffset latest = times[^1].Timestamp;
         int low = 0;
-        int high = timestamps.Count - 1;
+        int high = times.Count - 1;
         while (low < high)
         {
             int middle = low + (high - low) / 2;
-            if (latest - timestamps[middle] > visibleWindow)
+            if (latest - times[middle].Timestamp > visibleWindow)
                 low = middle + 1;
             else
                 high = middle;
@@ -256,18 +304,63 @@ public sealed class HeartRateChart : Control
         return low;
     }
 
-    private (double Lower, double Upper, double Step) AxisRange(int firstVisible)
+    private List<ChartBucket> BuildBuckets(int firstVisible)
     {
-        if (readings.Count == 0)
+        long intervalTicks = BucketDuration().Ticks;
+        var times = readings.Keys;
+        IList<ChartReading> samples = readings.Values;
+        var buckets = new List<ChartBucket>();
+        int first = firstVisible;
+        bool startsTrace = true;
+        while (first < samples.Count)
+        {
+            long bucketNumber = times[first].Timestamp.UtcTicks / intervalTicks;
+            int minimum = samples[first].Bpm;
+            int maximum = minimum;
+            long sum = minimum;
+            int next = first + 1;
+            bool breakTrace = false;
+            for (; next < samples.Count; next++)
+            {
+                DateTimeOffset timestamp = times[next].Timestamp;
+                breakTrace = samples[next].Trace != samples[next - 1].Trace || timestamp - times[next - 1].Timestamp > TraceGap;
+                if (breakTrace || timestamp.UtcTicks / intervalTicks != bucketNumber)
+                    break;
+
+                int bpm = samples[next].Bpm;
+                minimum = Math.Min(minimum, bpm);
+                maximum = Math.Max(maximum, bpm);
+                sum += bpm;
+            }
+
+            buckets.Add(new ChartBucket(
+                times[first].Timestamp, times[next - 1].Timestamp, minimum, maximum, (double)sum / (next - first), startsTrace));
+            first = next;
+            startsTrace = breakTrace;
+        }
+
+        return buckets;
+    }
+
+    private double DisplayedValue(ChartBucket bucket) => mode switch
+    {
+        HeartRateChartMode.Minimum => bucket.Minimum,
+        HeartRateChartMode.Average => bucket.Average,
+        _ => bucket.Maximum
+    };
+
+    private (double Lower, double Upper, double Step) AxisRange(List<ChartBucket> buckets)
+    {
+        if (buckets.Count == 0)
             return (40, 160, 30);
 
-        IList<ChartReading> samples = readings.Values;
-        double minimum = samples[firstVisible].Bpm;
-        double maximum = minimum;
-        for (int index = firstVisible + 1; index < samples.Count; index++)
+        double minimum = double.PositiveInfinity;
+        double maximum = double.NegativeInfinity;
+        foreach (ChartBucket bucket in buckets)
         {
-            minimum = Math.Min(minimum, samples[index].Bpm);
-            maximum = Math.Max(maximum, samples[index].Bpm);
+            double value = DisplayedValue(bucket);
+            minimum = Math.Min(minimum, mode == HeartRateChartMode.Range ? bucket.Minimum : value);
+            maximum = Math.Max(maximum, value);
         }
 
         double span = Math.Max(40, (maximum - minimum) * 1.2);
@@ -285,6 +378,8 @@ public sealed class HeartRateChart : Control
         using var gridPen = new Pen(Grid);
         using var axisPen = new Pen(Border);
         DashboardDrawing.Text(graphics, "BPM", axisFont, Muted, 21, plot.Top - 20);
+        if (plot.Width >= 90)
+            DashboardDrawing.Text(graphics, IntervalLabel(), labelFont, Muted, plot.Left, plot.Top - 21);
         int labelStride = Math.Max(1, (int)Math.Ceiling(15 * (upper - lower) / step / plot.Height));
         int tickIndex = 0;
         for (double tick = lower; tick <= upper; tick += step, tickIndex++)
@@ -331,90 +426,90 @@ public sealed class HeartRateChart : Control
         DashboardDrawing.Text(graphics, label, emptyFont, Muted, left, top);
     }
 
-    private void DrawReadings(Graphics graphics, RectangleF plot, double lower, double upper, int firstVisible)
+    private void DrawReadings(Graphics graphics, RectangleF plot, double lower, double upper, List<ChartBucket> buckets)
     {
         GraphicsState state = graphics.Save();
         RectangleF clip = RectangleF.Inflate(plot, 6, 6);
         graphics.SetClip(clip, CombineMode.Intersect);
-        using var fill = new LinearGradientBrush(plot, Color.FromArgb(46, 76, 186, 145), Color.FromArgb(0, 76, 186, 145), LinearGradientMode.Vertical);
         using var line = new Pen(Green, 2.25f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var rangeLine = new Pen(RangeLower, 1.75f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var bandFill = new SolidBrush(Color.FromArgb(64, 76, 186, 145));
         using var pointBrush = new SolidBrush(Green);
-        IList<DateTimeOffset> timestamps = readings.Keys;
-        IList<ChartReading> samples = readings.Values;
-        DateTimeOffset latest = timestamps[^1];
-        double secondsPerColumn = visibleWindow.TotalSeconds / plot.Width;
-        var segment = new List<PointF>(Math.Min(timestamps.Count - firstVisible, (int)plot.Width * 4));
-        Span<int> pointsToKeep = stackalloc int[4];
-        int first = firstVisible;
-        while (first < timestamps.Count)
-        {
-            int column = Column(first);
-            int minimum = first;
-            int maximum = first;
-            int next = first + 1;
-            bool breakTrace = false;
-            for (; next < timestamps.Count; next++)
-            {
-                breakTrace = samples[next].Trace != samples[next - 1].Trace || timestamps[next] - timestamps[next - 1] > TraceGap;
-                if (breakTrace || Column(next) != column)
-                    break;
-                if (samples[next].Bpm < samples[minimum].Bpm)
-                    minimum = next;
-                if (samples[next].Bpm > samples[maximum].Bpm)
-                    maximum = next;
-            }
-
-            // Keep the endpoints and both extremes of each column in time order.
-            pointsToKeep[0] = first;
-            pointsToKeep[1] = Math.Min(minimum, maximum);
-            pointsToKeep[2] = Math.Max(minimum, maximum);
-            pointsToKeep[3] = next - 1;
-            int previous = -1;
-            foreach (int index in pointsToKeep)
-            {
-                if (index != previous)
-                    segment.Add(Point(index));
-                previous = index;
-            }
-
-            if (breakTrace || next == timestamps.Count)
-            {
-                DrawSegment(graphics, plot.Bottom, segment, line, fill, pointBrush);
-                segment.Clear();
-            }
-            first = next;
-        }
-
-        PointF newest = Point(timestamps.Count - 1);
+        using var rangePointBrush = new SolidBrush(RangeLower);
         using var markerRing = new SolidBrush(Paper);
-        graphics.FillEllipse(markerRing, newest.X - 5.5f, newest.Y - 5.5f, 11, 11);
-        graphics.FillEllipse(pointBrush, newest.X - 3.5f, newest.Y - 3.5f, 7, 7);
+        DateTimeOffset latest = buckets[^1].LastTimestamp;
+
+        int first = 0;
+        for (int end = 1; end <= buckets.Count; end++)
+        {
+            if (end < buckets.Count && !buckets[end].StartsTrace)
+                continue;
+
+            int pointsCount = end - first + 2;
+            var upperPoints = new PointF[pointsCount];
+            PointF[]? lowerPoints = mode == HeartRateChartMode.Range ? new PointF[pointsCount] : null;
+            float startX = TimeX(plot, (buckets[first].FirstTimestamp - latest).TotalSeconds);
+            float endX = TimeX(plot, (buckets[end - 1].LastTimestamp - latest).TotalSeconds);
+            for (int index = first; index < end; index++)
+            {
+                ChartBucket bucket = buckets[index];
+                double startOffset = (bucket.FirstTimestamp - latest).TotalSeconds;
+                double endOffset = (bucket.LastTimestamp - latest).TotalSeconds;
+                float x = TimeX(plot, (startOffset + endOffset) / 2);
+                int point = index - first + 1;
+                upperPoints[point] = new PointF(x, RateY(plot, DisplayedValue(bucket), lower, upper));
+                if (lowerPoints is not null)
+                    lowerPoints[point] = new PointF(x, RateY(plot, bucket.Minimum, lower, upper));
+            }
+
+            // Extend the first and last aggregates to the observed ends of this trace only.
+            upperPoints[0] = new PointF(startX, upperPoints[1].Y);
+            upperPoints[^1] = new PointF(endX, upperPoints[^2].Y);
+            bool singlePoint = pointsCount == 3 && startX == endX;
+            if (lowerPoints is not null)
+            {
+                lowerPoints[0] = new PointF(startX, lowerPoints[1].Y);
+                lowerPoints[^1] = new PointF(endX, lowerPoints[^2].Y);
+                if (startX != endX)
+                {
+                    var polygon = new PointF[pointsCount * 2];
+                    upperPoints.CopyTo(polygon, 0);
+                    for (int point = 0; point < pointsCount; point++)
+                        polygon[pointsCount + point] = lowerPoints[pointsCount - point - 1];
+                    graphics.FillPolygon(bandFill, polygon);
+                }
+
+                if (singlePoint)
+                {
+                    graphics.DrawLine(rangeLine, lowerPoints[0], upperPoints[0]);
+                    DrawMarker(lowerPoints[0], rangePointBrush, 2.5f);
+                }
+                else
+                    graphics.DrawLines(rangeLine, lowerPoints);
+            }
+
+            if (singlePoint)
+                DrawMarker(upperPoints[0], pointBrush, 2.5f);
+            else
+                graphics.DrawLines(line, upperPoints);
+
+            if (end == buckets.Count)
+            {
+                if (lowerPoints is not null && lowerPoints[^1].Y - upperPoints[^1].Y >= 7)
+                    DrawMarker(lowerPoints[^1], rangePointBrush, 3.5f);
+                DrawMarker(upperPoints[^1], pointBrush, 3.5f);
+            }
+
+            first = end;
+        }
         graphics.Restore(state);
 
-        int Column(int index) => (int)((timestamps[index] - latest).TotalSeconds / secondsPerColumn);
-
-        PointF Point(int index) => new(
-            TimeX(plot, (timestamps[index] - latest).TotalSeconds),
-            RateY(plot, samples[index].Bpm, lower, upper));
-    }
-
-    private static void DrawSegment(Graphics graphics, float bottom, List<PointF> segment, Pen line, Brush fill, Brush pointBrush)
-    {
-        if (segment.Count == 1)
+        void DrawMarker(PointF point, Brush brush, float radius)
         {
-            PointF point = segment[0];
-            graphics.FillEllipse(pointBrush, point.X - 2.5f, point.Y - 2.5f, 5, 5);
-            return;
+            float borderRadius = radius + 2;
+            graphics.FillEllipse(markerRing, point.X - borderRadius, point.Y - borderRadius, borderRadius * 2, borderRadius * 2);
+            graphics.FillEllipse(brush, point.X - radius, point.Y - radius, radius * 2, radius * 2);
         }
-
-        PointF[] points = segment.ToArray();
-        using var area = new GraphicsPath();
-        area.AddLines(points);
-        area.AddLine(points[^1], new PointF(points[^1].X, bottom));
-        area.AddLine(new PointF(points[^1].X, bottom), new PointF(points[0].X, bottom));
-        area.CloseFigure();
-        graphics.FillPath(fill, area);
-        graphics.DrawLines(line, points);
     }
 
     private float TimeX(RectangleF plot, double seconds) =>

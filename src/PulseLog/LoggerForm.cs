@@ -28,10 +28,9 @@ internal sealed class LoggerForm : Form
     private readonly Button _export = MakeButton("Export CSV", true);
     private readonly HeartRateHero _hero = new();
     private readonly HeartRateChart _chart = new();
-    private readonly TableLayoutPanel _stats = new();
-    private readonly Label _primaryCaption = MakeLabel(9.5f, FontStyle.Regular, Subtle, "Minimum");
-    private readonly Label _primaryValue = MakeLabel(17, FontStyle.Bold, Ink);
+    private readonly Label _minimum = MakeLabel(17, FontStyle.Bold, Ink);
     private readonly Label _maximum = MakeLabel(17, FontStyle.Bold, Ink);
+    private readonly Label _average = MakeLabel(17, FontStyle.Bold, Ink);
 
     private HeartRateMonitorClient? _client;
     private SessionLog? _activeLog;
@@ -49,8 +48,6 @@ internal sealed class LoggerForm : Form
     private int _minBpm;
     private int _maxBpm;
     private double _meanBpm;
-    private StatsMode _statsMode = StatsMode.Range;
-    private TableLayoutPanel? _secondaryMetric;
 
     internal LoggerForm()
     {
@@ -68,25 +65,21 @@ internal sealed class LoggerForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 5,
             Padding = new Padding(28, 18, 28, 14)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 99));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 144));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 102));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
 
-        _hero.Dock = DockStyle.Fill;
-        _hero.Margin = new Padding(0, 0, 0, 12);
         layout.Controls.Add(BuildHeader(), 0, 0);
         layout.Controls.Add(BuildDevices(), 0, 1);
-        layout.Controls.Add(_hero, 0, 2);
-        layout.Controls.Add(BuildStatistics(), 0, 3);
-        layout.Controls.Add(BuildChart(), 0, 4);
-        layout.Controls.Add(BuildFooter(), 0, 5);
+        layout.Controls.Add(BuildSummary(), 0, 2);
+        layout.Controls.Add(BuildChart(), 0, 3);
+        layout.Controls.Add(BuildFooter(), 0, 4);
         Controls.Add(layout);
 
         _scan.Click += async (_, _) => await ScanAsync();
@@ -108,7 +101,7 @@ internal sealed class LoggerForm : Form
         SetDeviceStatus("Wake your monitor, turn on Bluetooth, then select Scan.");
         SetFileStatus("Sessions and CSV exports save beside PulseLog.exe.");
         _hero.SetReading(null);
-        UpdateStats();
+        UpdateStatsValues();
         UpdateButtons();
     }
 
@@ -164,28 +157,59 @@ internal sealed class LoggerForm : Form
         return card;
     }
 
-    private Control BuildStatistics()
+    private Control BuildSummary()
     {
-        var card = MakeCard(2, 2);
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
-        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
-        card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        card.Controls.Add(MakeLabel(11, FontStyle.Bold, Ink, "Session stats"), 0, 0);
-        var modes = new FlowLayoutPanel
+        var summary = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
-            Padding = new Padding(0, 6, 0, 0),
+            Margin = new Padding(0, 0, 0, 12),
+            ColumnCount = 2,
+            RowCount = 1
+        };
+        summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 53));
+        summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 47));
+        summary.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _hero.Dock = DockStyle.Fill;
+        _hero.Margin = new Padding(0, 0, 12, 0);
+        summary.Controls.Add(_hero, 0, 0);
+
+        var stats = MakeCard(3, 2);
+        stats.Margin = Padding.Empty;
+        stats.Padding = new Padding(14, 9, 14, 10);
+        stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
+        stats.RowStyles.Add(new RowStyle(SizeType.Absolute, 29));
+        stats.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var statsHeading = MakeLabel(11, FontStyle.Bold, Ink, "Session stats · BPM");
+        stats.Controls.Add(statsHeading, 0, 0);
+        stats.SetColumnSpan(statsHeading, 3);
+        stats.Controls.Add(BuildStat("Minimum", _minimum), 0, 1);
+        stats.Controls.Add(BuildStat("Maximum", _maximum), 1, 1);
+        stats.Controls.Add(BuildStat("Average", _average), 2, 1);
+        summary.Controls.Add(stats, 1, 0);
+        return summary;
+    }
+
+    private Control BuildChart()
+    {
+        _chart.Dock = DockStyle.Fill;
+        _chart.Margin = Padding.Empty;
+
+        var toolbar = new FlowLayoutPanel
+        {
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Color.Transparent,
             WrapContents = false
         };
         var options = new[]
         {
-            (Label: "Max", Mode: StatsMode.Maximum, Width: 57),
-            (Label: "Min", Mode: StatsMode.Minimum, Width: 57),
-            (Label: "Min + Max", Mode: StatsMode.Range, Width: 90),
-            (Label: "Avg", Mode: StatsMode.Average, Width: 57)
+            (Label: "Max", Mode: HeartRateChartMode.Maximum, Width: 48, Description: "Maximum per chart interval"),
+            (Label: "Min", Mode: HeartRateChartMode.Minimum, Width: 48, Description: "Minimum per chart interval"),
+            (Label: "Min + Max", Mode: HeartRateChartMode.Range, Width: 84, Description: "Minimum and maximum range per chart interval"),
+            (Label: "Avg", Mode: HeartRateChartMode.Average, Width: 48, Description: "Average per chart interval")
         };
 
         foreach (var option in options)
@@ -193,17 +217,13 @@ internal sealed class LoggerForm : Form
             var button = new RadioButton
             {
                 Text = option.Label,
-                AccessibleName = option.Mode switch
-                {
-                    StatsMode.Maximum => "Show maximum heart rate",
-                    StatsMode.Minimum => "Show minimum heart rate",
-                    StatsMode.Range => "Show minimum and maximum heart rate",
-                    _ => "Show average heart rate"
-                },
+                AccessibleName = option.Description,
+                Tag = option.Mode,
                 Appearance = Appearance.Button,
                 TextAlign = ContentAlignment.MiddleCenter,
                 FlatStyle = FlatStyle.Flat,
-                Size = new Size(option.Width, 33),
+                Font = new Font("Segoe UI", 9.5f),
+                Size = new Size(option.Width, 28),
                 Margin = new Padding(0, 0, 4, 0)
             };
             button.FlatAppearance.BorderColor = Border;
@@ -216,38 +236,16 @@ internal sealed class LoggerForm : Form
                 button.FlatAppearance.BorderColor = button.Checked ? Green : Border;
                 if (button.Checked)
                 {
-                    _statsMode = option.Mode;
-                    UpdateStats();
+                    _chart.SetMode(option.Mode);
                 }
             };
-            modes.Controls.Add(button);
-            if (option.Mode == StatsMode.Range)
+            toolbar.Controls.Add(button);
+            if (option.Mode == HeartRateChartMode.Range)
             {
                 button.Checked = true;
             }
         }
 
-        card.Controls.Add(modes, 0, 1);
-        _stats.Dock = DockStyle.Fill;
-        _stats.Margin = Padding.Empty;
-        _stats.ColumnCount = 2;
-        _stats.RowCount = 1;
-        _stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        _stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        _stats.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _stats.Controls.Add(BuildStat(_primaryCaption, _primaryValue), 0, 0);
-        _secondaryMetric = BuildStat(MakeLabel(9.5f, FontStyle.Regular, Subtle, "Maximum"), _maximum);
-        _maximum.AccessibleName = "Maximum heart rate";
-        _stats.Controls.Add(_secondaryMetric, 1, 0);
-        card.Controls.Add(_stats, 1, 0);
-        card.SetRowSpan(_stats, 2);
-        return card;
-    }
-
-    private Control BuildChart()
-    {
-        _chart.Dock = DockStyle.Fill;
-        _chart.Margin = Padding.Empty;
         _chartWindow.AccessibleName = "Chart time range";
         _chartWindow.DropDownStyle = ComboBoxStyle.DropDownList;
         _chartWindow.FlatStyle = FlatStyle.Flat;
@@ -255,8 +253,7 @@ internal sealed class LoggerForm : Form
         _chartWindow.ForeColor = Ink;
         _chartWindow.Font = new Font("Segoe UI", 9.5f);
         _chartWindow.Width = 146;
-        _chartWindow.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _chartWindow.Location = new Point(_chart.Width - _chartWindow.Width - 22, 15);
+        _chartWindow.Margin = new Padding(8, 2, 0, 0);
 
         var windows = new[]
         {
@@ -276,7 +273,10 @@ internal sealed class LoggerForm : Form
             }
         };
         _chartWindow.SelectedIndex = 1;
-        _chart.Controls.Add(_chartWindow);
+        toolbar.Controls.Add(_chartWindow);
+        toolbar.Size = toolbar.PreferredSize;
+        toolbar.Location = new Point(_chart.ClientSize.Width - toolbar.Width - 22, 13);
+        _chart.Controls.Add(toolbar);
         return _chart;
     }
 
@@ -408,7 +408,7 @@ internal sealed class LoggerForm : Form
             _meanBpm = 0;
             _hero.SetReading(null);
             _chart.ClearReadings();
-            UpdateStats();
+            UpdateStatsValues();
             SetDeviceStatus($"Connected to {_connectedName}. Waiting for readings…");
             SetFileStatus("Recording beside PulseLog.exe.");
 
@@ -600,54 +600,34 @@ internal sealed class LoggerForm : Form
         }
     }
 
-    private static TableLayoutPanel BuildStat(Label caption, Label value)
+    private static TableLayoutPanel BuildStat(string name, Label value)
     {
         var metric = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(6, 0, 0, 0),
-            Padding = new Padding(12, 3, 8, 0),
+            Margin = new Padding(3, 0, 3, 0),
+            Padding = new Padding(3, 7, 3, 7),
             ColumnCount = 1,
             RowCount = 2,
             BackColor = Canvas
         };
         metric.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        metric.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        metric.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
         metric.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var caption = MakeLabel(9.5f, FontStyle.Regular, Subtle, name);
+        caption.TextAlign = ContentAlignment.MiddleCenter;
+        value.AccessibleName = $"Session {name.ToLowerInvariant()} heart rate in BPM";
+        value.TextAlign = ContentAlignment.MiddleCenter;
         metric.Controls.Add(caption, 0, 0);
         metric.Controls.Add(value, 0, 1);
         return metric;
     }
 
-    private void UpdateStats()
-    {
-        _primaryCaption.Text = _statsMode switch
-        {
-            StatsMode.Maximum => "Maximum",
-            StatsMode.Average => "Average",
-            _ => "Minimum"
-        };
-        _primaryValue.AccessibleName = $"{_primaryCaption.Text} heart rate";
-        if (_secondaryMetric is not null)
-        {
-            var range = _statsMode == StatsMode.Range;
-            _secondaryMetric.Visible = range;
-            _stats.ColumnStyles[0].Width = range ? 50 : 100;
-            _stats.ColumnStyles[1].Width = range ? 50 : 0;
-        }
-        UpdateStatsValues();
-    }
-
     private void UpdateStatsValues()
     {
-        var rate = _statsMode switch
-        {
-            StatsMode.Maximum => _maxBpm.ToString(CultureInfo.CurrentCulture),
-            StatsMode.Average => _meanBpm.ToString("0.0", CultureInfo.CurrentCulture),
-            _ => _minBpm.ToString(CultureInfo.CurrentCulture)
-        };
-        _primaryValue.Text = _sampleCount == 0 ? "—" : $"{rate} bpm";
-        _maximum.Text = _sampleCount == 0 ? "—" : $"{_maxBpm.ToString(CultureInfo.CurrentCulture)} bpm";
+        _minimum.Text = _sampleCount == 0 ? "—" : _minBpm.ToString(CultureInfo.CurrentCulture);
+        _maximum.Text = _sampleCount == 0 ? "—" : _maxBpm.ToString(CultureInfo.CurrentCulture);
+        _average.Text = _sampleCount == 0 ? "—" : _meanBpm.ToString("0.0", CultureInfo.CurrentCulture);
     }
 
     private void UpdateButtons()
@@ -792,11 +772,4 @@ internal sealed class LoggerForm : Form
         return button;
     }
 
-    private enum StatsMode
-    {
-        Maximum,
-        Minimum,
-        Range,
-        Average
-    }
 }
