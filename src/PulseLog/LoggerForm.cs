@@ -18,11 +18,13 @@ internal sealed class LoggerForm : Form
     private readonly CancellationTokenSource _lifetime = new();
     private readonly ToolTip _hints = new();
     private readonly ComboBox _devices = new();
+    private readonly ComboBox _chartWindow = new();
     private readonly Label _deviceStatus = MakeLabel(9.5f, FontStyle.Regular, Subtle);
     private readonly Label _fileStatus = MakeLabel(9.5f, FontStyle.Regular, Subtle);
     private readonly Button _scan = MakeButton("Scan", false);
     private readonly Button _connect = MakeButton("Connect", true);
-    private readonly Button _openLogs = MakeButton("Open logs", false);
+    private readonly Button _recording = MakeButton("Pause recording", false);
+    private readonly Button _openLogs = MakeButton("Open folder", false);
     private readonly Button _export = MakeButton("Export CSV", true);
     private readonly HeartRateHero _hero = new();
     private readonly HeartRateChart _chart = new();
@@ -39,6 +41,8 @@ internal sealed class LoggerForm : Form
     private bool _connecting;
     private bool _droppedDuringConnect;
     private bool _exporting;
+    private bool _recordingPaused;
+    private bool _hasLiveReading;
     private volatile bool _closing;
     private string? _connectedName;
     private long _sampleCount;
@@ -77,13 +81,11 @@ internal sealed class LoggerForm : Form
 
         _hero.Dock = DockStyle.Fill;
         _hero.Margin = new Padding(0, 0, 0, 12);
-        _chart.Dock = DockStyle.Fill;
-        _chart.Margin = Padding.Empty;
         layout.Controls.Add(BuildHeader(), 0, 0);
         layout.Controls.Add(BuildDevices(), 0, 1);
         layout.Controls.Add(_hero, 0, 2);
         layout.Controls.Add(BuildStatistics(), 0, 3);
-        layout.Controls.Add(_chart, 0, 4);
+        layout.Controls.Add(BuildChart(), 0, 4);
         layout.Controls.Add(BuildFooter(), 0, 5);
         Controls.Add(layout);
 
@@ -99,12 +101,13 @@ internal sealed class LoggerForm : Form
                 await ConnectAsync(monitor);
             }
         };
+        _recording.Click += (_, _) => ToggleRecording();
         _openLogs.Click += (_, _) => OpenLogs();
         _export.Click += async (_, _) => await ExportAsync();
 
         SetDeviceStatus("Wake your monitor, turn on Bluetooth, then select Scan.");
-        SetFileStatus("Sessions save automatically on this PC.");
-        _hero.SetReading(null, 0);
+        SetFileStatus("Sessions and CSV exports save beside PulseLog.exe.");
+        _hero.SetReading(null);
         UpdateStats();
         UpdateButtons();
     }
@@ -128,17 +131,18 @@ internal sealed class LoggerForm : Form
 
     private Control BuildDevices()
     {
-        var card = MakeCard(3, 3);
+        var card = MakeCard(4, 3);
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 87));
-        card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 149));
         card.RowStyles.Add(new RowStyle(SizeType.Absolute, 21));
         card.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var heading = MakeLabel(11, FontStyle.Bold, Ink, "Heart rate monitor");
         card.Controls.Add(heading, 0, 0);
-        card.SetColumnSpan(heading, 3);
+        card.SetColumnSpan(heading, 4);
 
         _devices.AccessibleName = "Bluetooth heart rate monitor";
         _devices.Anchor = AnchorStyles.Left | AnchorStyles.Right;
@@ -150,11 +154,13 @@ internal sealed class LoggerForm : Form
         _devices.DisplayMember = nameof(HeartRateMonitorInfo.DisplayName);
         _devices.SelectedIndexChanged += (_, _) => UpdateButtons();
         _scan.Margin = new Padding(0, 0, 8, 0);
+        _connect.Margin = new Padding(0, 0, 8, 0);
         card.Controls.Add(_devices, 0, 1);
         card.Controls.Add(_scan, 1, 1);
         card.Controls.Add(_connect, 2, 1);
+        card.Controls.Add(_recording, 3, 1);
         card.Controls.Add(_deviceStatus, 0, 2);
-        card.SetColumnSpan(_deviceStatus, 3);
+        card.SetColumnSpan(_deviceStatus, 4);
         return card;
     }
 
@@ -238,6 +244,42 @@ internal sealed class LoggerForm : Form
         return card;
     }
 
+    private Control BuildChart()
+    {
+        _chart.Dock = DockStyle.Fill;
+        _chart.Margin = Padding.Empty;
+        _chartWindow.AccessibleName = "Chart time range";
+        _chartWindow.DropDownStyle = ComboBoxStyle.DropDownList;
+        _chartWindow.FlatStyle = FlatStyle.Flat;
+        _chartWindow.BackColor = Canvas;
+        _chartWindow.ForeColor = Ink;
+        _chartWindow.Font = new Font("Segoe UI", 9.5f);
+        _chartWindow.Width = 146;
+        _chartWindow.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _chartWindow.Location = new Point(_chart.Width - _chartWindow.Width - 22, 15);
+
+        var windows = new[]
+        {
+            (Label: "Last 1 minute", Minutes: 1),
+            (Label: "Last 2 minutes", Minutes: 2),
+            (Label: "Last 5 minutes", Minutes: 5),
+            (Label: "Last 15 minutes", Minutes: 15),
+            (Label: "Last 30 minutes", Minutes: 30),
+            (Label: "Last hour", Minutes: 60)
+        };
+        _chartWindow.Items.AddRange(windows.Select(window => window.Label).ToArray());
+        _chartWindow.SelectedIndexChanged += (_, _) =>
+        {
+            if (_chartWindow.SelectedIndex >= 0)
+            {
+                _chart.SetWindow(TimeSpan.FromMinutes(windows[_chartWindow.SelectedIndex].Minutes));
+            }
+        };
+        _chartWindow.SelectedIndex = 1;
+        _chart.Controls.Add(_chartWindow);
+        return _chart;
+    }
+
     private Control BuildFooter()
     {
         var footer = new TableLayoutPanel
@@ -250,7 +292,7 @@ internal sealed class LoggerForm : Form
         };
         footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 107));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 116));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 121));
 
         _openLogs.Margin = new Padding(0, 4, 8, 4);
@@ -348,16 +390,27 @@ internal sealed class LoggerForm : Form
                 throw new InvalidOperationException("The monitor connection was lost during setup. Try connecting again.");
             }
 
-            _activeLog = SessionLog.Start();
+            try
+            {
+                _activeLog = SessionLog.Start();
+            }
+            catch (Exception error) when (IsFileError(error))
+            {
+                EndSession($"Could not start the session. {DescribeStorageError(error)}", error: true);
+                return;
+            }
+
             _lastLog = _activeLog;
             _connectedName = monitor.Name;
+            _recordingPaused = false;
+            _hasLiveReading = false;
             _sampleCount = 0;
             _meanBpm = 0;
-            _hero.SetReading(null, 0);
+            _hero.SetReading(null);
             _chart.ClearReadings();
             UpdateStats();
-            SetDeviceStatus($"Connected to {_connectedName}. Waiting for the first reading…");
-            SetFileStatus("Recording to this PC.");
+            SetDeviceStatus($"Connected to {_connectedName}. Waiting for readings…");
+            SetFileStatus("Recording beside PulseLog.exe.");
 
             var pending = _pendingReadings;
             _pendingReadings = null;
@@ -372,7 +425,7 @@ internal sealed class LoggerForm : Form
         catch (OperationCanceledException) when (_closing)
         {
         }
-        catch (Exception error) when (IsDeviceError(error) || IsFileError(error))
+        catch (Exception error) when (IsDeviceError(error))
         {
             if (!_closing)
             {
@@ -402,30 +455,57 @@ internal sealed class LoggerForm : Form
             return;
         }
 
+        var bpm = reading.BeatsPerMinute;
+        _hero.SetReading(bpm);
+        if (!_hasLiveReading)
+        {
+            _hasLiveReading = true;
+            SetDeviceStatus($"Connected to {_connectedName}. Receiving readings.");
+        }
+
+        if (_recordingPaused)
+        {
+            return;
+        }
+
         try
         {
             _activeLog.Append(reading);
         }
         catch (Exception error) when (IsFileError(error))
         {
-            EndSession($"Recording stopped because the CSV could not be written. {error.Message}", error: true);
+            EndSession($"Recording stopped. {DescribeStorageError(error)}", error: true);
             return;
         }
 
         _sampleCount++;
-        var bpm = reading.BeatsPerMinute;
         _minBpm = _sampleCount == 1 ? bpm : Math.Min(_minBpm, bpm);
         _maxBpm = _sampleCount == 1 ? bpm : Math.Max(_maxBpm, bpm);
         _meanBpm += (bpm - _meanBpm) / _sampleCount;
-        _hero.SetReading(bpm, _sampleCount);
         _chart.AddReading(reading.Timestamp, bpm);
         UpdateStatsValues();
 
         if (_sampleCount == 1)
         {
-            SetDeviceStatus($"Connected to {_connectedName}. Receiving readings.");
             UpdateButtons();
         }
+    }
+
+    private void ToggleRecording()
+    {
+        if (_activeLog is null)
+        {
+            return;
+        }
+
+        _recordingPaused = !_recordingPaused;
+        if (_recordingPaused)
+        {
+            _chart.BreakTrace();
+        }
+
+        SetFileStatus(_recordingPaused ? "Recording paused. Live BPM still updates." : "Recording beside PulseLog.exe.");
+        UpdateButtons();
     }
 
     private void HandleDisconnect(HeartRateMonitorClient client)
@@ -451,6 +531,7 @@ internal sealed class LoggerForm : Form
         _pendingReadings = null;
         var log = _activeLog;
         _activeLog = null;
+        _recordingPaused = false;
         _connectedName = null;
         client?.Dispose();
 
@@ -460,7 +541,7 @@ internal sealed class LoggerForm : Form
             if (log is not null)
             {
                 _hero.SetSessionEnded();
-                SetFileStatus($"Saved on this PC · {_sampleCount:N0} {(_sampleCount == 1 ? "reading" : "readings")}");
+                SetFileStatus("Session saved beside PulseLog.exe.");
             }
         }
         catch (Exception fileError) when (IsFileError(fileError))
@@ -483,30 +564,18 @@ internal sealed class LoggerForm : Form
         UpdateButtons();
         try
         {
-            using var dialog = new SaveFileDialog
+            var destination = await Task.Run(log.Export);
+            if (!_closing)
             {
-                Title = "Export heart rate session",
-                Filter = "CSV files (*.csv)|*.csv",
-                DefaultExt = "csv",
-                AddExtension = true,
-                FileName = Path.GetFileName(log.FilePath),
-                OverwritePrompt = true
-            };
-            if (dialog.ShowDialog(this) == DialogResult.OK)
-            {
-                var destination = dialog.FileName;
-                await Task.Run(() => log.Export(destination));
-                if (!_closing)
-                {
-                    SetFileStatus($"Exported {Path.GetFileName(destination)}");
-                }
+                SetFileStatus("CSV exported beside PulseLog.exe.");
+                _hints.SetToolTip(_fileStatus, destination);
             }
         }
         catch (Exception error) when (IsFileError(error))
         {
             if (!_closing)
             {
-                SetFileStatus($"Could not export CSV. {error.Message}", error: true);
+                SetFileStatus($"Could not export CSV. {DescribeStorageError(error)}", error: true);
             }
         }
         finally
@@ -523,12 +592,11 @@ internal sealed class LoggerForm : Form
     {
         try
         {
-            Directory.CreateDirectory(SessionLog.DirectoryPath);
-            Process.Start(new ProcessStartInfo(SessionLog.DirectoryPath) { UseShellExecute = true });
+            using var folder = Process.Start(new ProcessStartInfo(SessionLog.DirectoryPath) { UseShellExecute = true });
         }
         catch (Exception error) when (IsFileError(error) || error is System.ComponentModel.Win32Exception)
         {
-            SetFileStatus($"Could not open the session folder. {error.Message}", error: true);
+            SetFileStatus($"Could not open the program folder. {error.Message}", error: true);
         }
     }
 
@@ -590,6 +658,8 @@ internal sealed class LoggerForm : Form
         _devices.Enabled = !active && !_scanning && !_connecting && _devices.Items.Count > 0;
         SetPrimaryButtonEnabled(_connect, !_scanning && !_connecting && (active || _devices.SelectedItem is not null));
         _connect.Text = active ? "Disconnect" : _connecting ? "Connecting…" : "Connect";
+        _recording.Enabled = active;
+        _recording.Text = _recordingPaused ? "Resume recording" : "Pause recording";
         SetPrimaryButtonEnabled(_export, _lastLog is not null && _sampleCount > 0 && !_exporting);
     }
 
@@ -676,6 +746,10 @@ internal sealed class LoggerForm : Form
 
     private static bool IsFileError(Exception error) => error is IOException
         or UnauthorizedAccessException or NotSupportedException or ArgumentException or System.Security.SecurityException;
+
+    private static string DescribeStorageError(Exception error) => error is UnauthorizedAccessException or System.Security.SecurityException
+        ? "Move PulseLog.exe to a folder you can write to, then try again."
+        : error.Message;
 
     private static TableLayoutPanel MakeCard(int columns, int rows) => new()
     {

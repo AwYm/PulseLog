@@ -20,30 +20,13 @@ internal sealed class SessionLog : IDisposable
         this.writer = writer;
     }
 
-    public static string DirectoryPath
-    {
-        get
-        {
-            var localData = Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData,
-                Environment.SpecialFolderOption.DoNotVerify);
-
-            if (string.IsNullOrEmpty(localData))
-                throw new IOException("Windows did not report a local application data folder.");
-
-            return Path.Combine(localData, "HeartRateLogger", "Sessions");
-        }
-    }
+    public static string DirectoryPath => AppContext.BaseDirectory;
 
     public string FilePath { get; }
 
     public static SessionLog Start()
     {
-        var directory = DirectoryPath;
-        Directory.CreateDirectory(directory);
-
-        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff'Z'", CultureInfo.InvariantCulture);
-        var filePath = Path.Combine(directory, $"heart-rate-{timestamp}-{Guid.NewGuid():N}.csv");
+        var filePath = CreateCsvPath("heart-rate");
         var stream = new FileStream(filePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read, bufferSize: 1);
 
         try
@@ -93,18 +76,13 @@ internal sealed class SessionLog : IDisposable
         }
     }
 
-    public void Export(string destinationPath)
+    public string Export()
     {
-        var destination = Path.GetFullPath(destinationPath);
+        var destination = CreateCsvPath("heart-rate-export");
+        var temporaryPath = Path.ChangeExtension(destination, ".tmp");
 
         lock (sync)
         {
-            if (string.Equals(destination, FilePath, StringComparison.OrdinalIgnoreCase) && File.Exists(FilePath))
-                return;
-
-            var destinationDirectory = Path.GetDirectoryName(destination)
-                ?? throw new IOException("Select a file for CSV export.");
-            var temporaryPath = Path.Combine(destinationDirectory, $".heart-rate-export-{Guid.NewGuid():N}.tmp");
             var target = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
 
             try
@@ -116,7 +94,8 @@ internal sealed class SessionLog : IDisposable
                     target.Flush(flushToDisk: true);
                 }
 
-                File.Move(temporaryPath, destination, overwrite: true);
+                File.Move(temporaryPath, destination);
+                return destination;
             }
             catch
             {
@@ -134,6 +113,12 @@ internal sealed class SessionLog : IDisposable
             writer = null;
             stream?.Dispose();
         }
+    }
+
+    private static string CreateCsvPath(string prefix)
+    {
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff'Z'", CultureInfo.InvariantCulture);
+        return Path.Combine(DirectoryPath, $"{prefix}-{timestamp}-{Guid.NewGuid():N}.csv");
     }
 
     private static void TryDelete(string path)

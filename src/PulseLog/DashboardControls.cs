@@ -17,7 +17,6 @@ public sealed class HeartRateHero : Control
     private readonly Font detailFont = new("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel);
 
     private int? heartRate;
-    private long count;
     private bool sessionEnded;
 
     public HeartRateHero()
@@ -33,10 +32,9 @@ public sealed class HeartRateHero : Control
         AccessibleDescription = "Waiting for a reading";
     }
 
-    public void SetReading(int? bpm, long sampleCount)
+    public void SetReading(int? bpm)
     {
         heartRate = bpm;
-        count = sampleCount;
         sessionEnded = false;
         AccessibleName = "Current heart rate";
         AccessibleDescription = heartRate is int rate ? $"{rate} beats per minute" : "Waiting for a reading";
@@ -70,7 +68,8 @@ public sealed class HeartRateHero : Control
         graphics.SetClip(panel, CombineMode.Intersect);
 
         float left = Math.Min(25, width / 8);
-        float top = Math.Max(5, (height - 121) / 2);
+        float contentHeight = heartRate is null ? 121 : 93;
+        float top = Math.Max(5, (height - contentHeight) / 2);
         string value = heartRate?.ToString(CultureInfo.CurrentCulture) ?? "–";
         float valueWidth = DashboardDrawing.TextWidth(graphics, value, valueFont);
         if (width >= Math.Max(385, left + valueWidth + 230) && height >= 95)
@@ -81,13 +80,11 @@ public sealed class HeartRateHero : Control
         if (left + valueWidth + 54 < width)
             DashboardDrawing.Text(graphics, "BPM", unitFont, Mint, left + valueWidth + 10, top + 49);
 
-        string detail = count switch
+        if (heartRate is null)
         {
-            <= 0 => sessionEnded ? "No readings recorded" : "Waiting for a reading",
-            1 => "1 reading recorded",
-            _ => $"{count:N0} readings recorded"
-        };
-        DashboardDrawing.Text(graphics, detail, detailFont, Soft, left, top + 97);
+            string detail = sessionEnded ? "No reading available" : "Waiting for a reading";
+            DashboardDrawing.Text(graphics, detail, detailFont, Soft, left, top + 97);
+        }
         graphics.Restore(state);
     }
 
@@ -130,20 +127,25 @@ public sealed class HeartRateHero : Control
 
 public sealed class HeartRateChart : Control
 {
-    private const int WindowSeconds = 120;
+    private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(1);
+    private static readonly TimeSpan TraceGap = TimeSpan.FromSeconds(15);
+    private static readonly int[] TimeTickSteps = [15, 30, 60, 120, 180, 300, 600, 900, 1200, 1800, 3600];
     private static readonly Color Paper = Color.FromArgb(255, 255, 252);
     private static readonly Color Ink = Color.FromArgb(16, 45, 40);
     private static readonly Color Muted = Color.FromArgb(75, 105, 98);
     private static readonly Color Border = Color.FromArgb(219, 230, 221);
     private static readonly Color Grid = Color.FromArgb(231, 239, 233);
     private static readonly Color Green = Color.FromArgb(22, 129, 104);
-    private static readonly Color PaleGreen = Color.FromArgb(234, 245, 238);
 
-    private readonly SortedList<DateTimeOffset, int> readings = new();
+    private readonly SortedList<DateTimeOffset, ChartReading> readings = new();
     private readonly Font titleFont = new("Segoe UI Semibold", 20, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font labelFont = new("Segoe UI", 11, FontStyle.Regular, GraphicsUnit.Pixel);
-    private readonly Font badgeFont = new("Segoe UI Semibold", 10, FontStyle.Regular, GraphicsUnit.Pixel);
+    private readonly Font axisFont = new("Segoe UI Semibold", 10, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font emptyFont = new("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel);
+    private TimeSpan visibleWindow = TimeSpan.FromMinutes(2);
+    private int trace;
+
+    private readonly record struct ChartReading(int Bpm, int Trace);
 
     public HeartRateChart()
     {
@@ -155,23 +157,46 @@ public sealed class HeartRateChart : Control
         Size = new Size(620, 285);
         AccessibleName = "Heart rate history";
         AccessibleRole = AccessibleRole.Chart;
-        AccessibleDescription = "Heart rate in beats per minute over the latest two minutes.";
+        UpdateAccessibleDescription();
+    }
+
+    public void SetWindow(TimeSpan window)
+    {
+        if (window < TimeSpan.FromMinutes(1) || window > RetentionWindow)
+            throw new ArgumentOutOfRangeException(nameof(window));
+        if (visibleWindow == window)
+            return;
+
+        visibleWindow = window;
+        UpdateAccessibleDescription();
+        Invalidate();
     }
 
     public void AddReading(DateTimeOffset timestamp, int bpm)
     {
-        readings[timestamp] = bpm;
+        readings[timestamp] = new ChartReading(bpm, trace);
         DateTimeOffset latest = readings.Keys[^1];
-        while ((latest - readings.Keys[0]).TotalSeconds > WindowSeconds)
+        while (latest - readings.Keys[0] > RetentionWindow)
             readings.RemoveAt(0);
 
         Invalidate();
     }
 
+    public void BreakTrace() => trace++;
+
     public void ClearReadings()
     {
         readings.Clear();
+        trace = 0;
         Invalidate();
+    }
+
+    private void UpdateAccessibleDescription()
+    {
+        string duration = visibleWindow == TimeSpan.FromMinutes(1)
+            ? "1 minute"
+            : $"{visibleWindow.TotalMinutes:0.##} minutes";
+        AccessibleDescription = $"Heart rate in beats per minute over the latest {duration} of recorded history.";
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -194,40 +219,57 @@ public sealed class HeartRateChart : Control
         graphics.SetClip(panel, CombineMode.Intersect);
 
         DashboardDrawing.Text(graphics, "Heart rate history", titleFont, Ink, 21, 15);
-        if (width >= 285)
-            DrawTimeBadge(graphics, width - 112);
 
         RectangleF plot = RectangleF.FromLTRB(55, 67, width - 25, height - 33);
         if (plot.Width >= 30 && plot.Height >= 16)
         {
-            (double lower, double upper, double step) = AxisRange();
+            int firstVisible = FirstVisibleIndex();
+            (double lower, double upper, double step) = AxisRange(firstVisible);
             DrawGrid(graphics, plot, lower, upper, step);
             if (readings.Count == 0)
                 DrawEmptyState(graphics, plot);
             else
-                DrawReadings(graphics, plot, lower, upper);
+                DrawReadings(graphics, plot, lower, upper, firstVisible);
         }
 
         graphics.Restore(state);
     }
 
-    private void DrawTimeBadge(Graphics graphics, float left)
+    private int FirstVisibleIndex()
     {
-        using GraphicsPath badge = DashboardDrawing.RoundedRectangle(new RectangleF(left, 16, 90, 23), 11.5f);
-        using var brush = new SolidBrush(PaleGreen);
-        graphics.FillPath(brush, badge);
-        const string label = "LAST 2 MIN";
-        float labelWidth = DashboardDrawing.TextWidth(graphics, label, badgeFont);
-        DashboardDrawing.Text(graphics, label, badgeFont, Muted, left + (90 - labelWidth) / 2, 21);
+        if (readings.Count == 0)
+            return 0;
+
+        IList<DateTimeOffset> timestamps = readings.Keys;
+        DateTimeOffset latest = timestamps[^1];
+        int low = 0;
+        int high = timestamps.Count - 1;
+        while (low < high)
+        {
+            int middle = low + (high - low) / 2;
+            if (latest - timestamps[middle] > visibleWindow)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+
+        return low;
     }
 
-    private (double Lower, double Upper, double Step) AxisRange()
+    private (double Lower, double Upper, double Step) AxisRange(int firstVisible)
     {
         if (readings.Count == 0)
             return (40, 160, 30);
 
-        double minimum = readings.Values.Min();
-        double maximum = readings.Values.Max();
+        IList<ChartReading> samples = readings.Values;
+        double minimum = samples[firstVisible].Bpm;
+        double maximum = minimum;
+        for (int index = firstVisible + 1; index < samples.Count; index++)
+        {
+            minimum = Math.Min(minimum, samples[index].Bpm);
+            maximum = Math.Max(maximum, samples[index].Bpm);
+        }
+
         double span = Math.Max(40, (maximum - minimum) * 1.2);
         double rawStep = span / 4;
         double power = Math.Pow(10, Math.Floor(Math.Log10(rawStep)));
@@ -242,7 +284,7 @@ public sealed class HeartRateChart : Control
     {
         using var gridPen = new Pen(Grid);
         using var axisPen = new Pen(Border);
-        DashboardDrawing.Text(graphics, "BPM", badgeFont, Muted, 21, plot.Top - 20);
+        DashboardDrawing.Text(graphics, "BPM", axisFont, Muted, 21, plot.Top - 20);
         int labelStride = Math.Max(1, (int)Math.Ceiling(15 * (upper - lower) / step / plot.Height));
         int tickIndex = 0;
         for (double tick = lower; tick <= upper; tick += step, tickIndex++)
@@ -257,12 +299,19 @@ public sealed class HeartRateChart : Control
             }
         }
 
-        int secondsPerTick = plot.Width >= 360 ? 30 : 60;
-        for (int seconds = -WindowSeconds; seconds <= 0; seconds += secondsPerTick)
+        int intervals = Math.Clamp((int)(plot.Width / 68), 1, 6);
+        double tickTarget = visibleWindow.TotalSeconds / intervals;
+        int secondsPerTick = TimeTickSteps.First(seconds => seconds >= tickTarget);
+        for (int seconds = 0; seconds <= visibleWindow.TotalSeconds; seconds += secondsPerTick)
         {
-            float x = TimeX(plot, seconds);
+            float x = TimeX(plot, -seconds);
             graphics.DrawLine(gridPen, x, plot.Top, x, plot.Bottom);
-            string label = seconds == 0 ? "Latest" : $"−{-seconds}s";
+            string label = seconds switch
+            {
+                0 => "Latest",
+                _ when seconds % 60 == 0 => $"−{seconds / 60} min",
+                _ => $"−{seconds} s"
+            };
             float labelWidth = DashboardDrawing.TextWidth(graphics, label, labelFont);
             DashboardDrawing.Text(graphics, label, labelFont, Muted, Math.Min(x - labelWidth / 2, plot.Right + 17 - labelWidth), plot.Bottom + 8);
         }
@@ -282,7 +331,7 @@ public sealed class HeartRateChart : Control
         DashboardDrawing.Text(graphics, label, emptyFont, Muted, left, top);
     }
 
-    private void DrawReadings(Graphics graphics, RectangleF plot, double lower, double upper)
+    private void DrawReadings(Graphics graphics, RectangleF plot, double lower, double upper, int firstVisible)
     {
         GraphicsState state = graphics.Save();
         RectangleF clip = RectangleF.Inflate(plot, 6, 6);
@@ -290,27 +339,63 @@ public sealed class HeartRateChart : Control
         using var fill = new LinearGradientBrush(plot, Color.FromArgb(46, 76, 186, 145), Color.FromArgb(0, 76, 186, 145), LinearGradientMode.Vertical);
         using var line = new Pen(Green, 2.25f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
         using var pointBrush = new SolidBrush(Green);
-        var segment = new List<PointF>();
-        DateTimeOffset latest = readings.Keys[^1];
-        DateTimeOffset previous = readings.Keys[0];
-        foreach (var reading in readings)
+        IList<DateTimeOffset> timestamps = readings.Keys;
+        IList<ChartReading> samples = readings.Values;
+        DateTimeOffset latest = timestamps[^1];
+        double secondsPerColumn = visibleWindow.TotalSeconds / plot.Width;
+        var segment = new List<PointF>(Math.Min(timestamps.Count - firstVisible, (int)plot.Width * 4));
+        Span<int> pointsToKeep = stackalloc int[4];
+        int first = firstVisible;
+        while (first < timestamps.Count)
         {
-            if ((reading.Key - previous).TotalSeconds > 15)
+            int column = Column(first);
+            int minimum = first;
+            int maximum = first;
+            int next = first + 1;
+            bool breakTrace = false;
+            for (; next < timestamps.Count; next++)
+            {
+                breakTrace = samples[next].Trace != samples[next - 1].Trace || timestamps[next] - timestamps[next - 1] > TraceGap;
+                if (breakTrace || Column(next) != column)
+                    break;
+                if (samples[next].Bpm < samples[minimum].Bpm)
+                    minimum = next;
+                if (samples[next].Bpm > samples[maximum].Bpm)
+                    maximum = next;
+            }
+
+            // Keep the endpoints and both extremes of each column in time order.
+            pointsToKeep[0] = first;
+            pointsToKeep[1] = Math.Min(minimum, maximum);
+            pointsToKeep[2] = Math.Max(minimum, maximum);
+            pointsToKeep[3] = next - 1;
+            int previous = -1;
+            foreach (int index in pointsToKeep)
+            {
+                if (index != previous)
+                    segment.Add(Point(index));
+                previous = index;
+            }
+
+            if (breakTrace || next == timestamps.Count)
             {
                 DrawSegment(graphics, plot.Bottom, segment, line, fill, pointBrush);
                 segment.Clear();
             }
-
-            segment.Add(new PointF(TimeX(plot, (reading.Key - latest).TotalSeconds), RateY(plot, reading.Value, lower, upper)));
-            previous = reading.Key;
+            first = next;
         }
 
-        DrawSegment(graphics, plot.Bottom, segment, line, fill, pointBrush);
-        PointF newest = segment[^1];
+        PointF newest = Point(timestamps.Count - 1);
         using var markerRing = new SolidBrush(Paper);
         graphics.FillEllipse(markerRing, newest.X - 5.5f, newest.Y - 5.5f, 11, 11);
         graphics.FillEllipse(pointBrush, newest.X - 3.5f, newest.Y - 3.5f, 7, 7);
         graphics.Restore(state);
+
+        int Column(int index) => (int)((timestamps[index] - latest).TotalSeconds / secondsPerColumn);
+
+        PointF Point(int index) => new(
+            TimeX(plot, (timestamps[index] - latest).TotalSeconds),
+            RateY(plot, samples[index].Bpm, lower, upper));
     }
 
     private static void DrawSegment(Graphics graphics, float bottom, List<PointF> segment, Pen line, Brush fill, Brush pointBrush)
@@ -332,8 +417,8 @@ public sealed class HeartRateChart : Control
         graphics.DrawLines(line, points);
     }
 
-    private static float TimeX(RectangleF plot, double seconds) =>
-        plot.Left + (float)((seconds + WindowSeconds) / WindowSeconds) * plot.Width;
+    private float TimeX(RectangleF plot, double seconds) =>
+        plot.Right + (float)(seconds / visibleWindow.TotalSeconds) * plot.Width;
 
     private static float RateY(RectangleF plot, double rate, double lower, double upper) =>
         plot.Bottom - (float)((rate - lower) / (upper - lower)) * plot.Height;
@@ -344,7 +429,7 @@ public sealed class HeartRateChart : Control
         {
             titleFont.Dispose();
             labelFont.Dispose();
-            badgeFont.Dispose();
+            axisFont.Dispose();
             emptyFont.Dispose();
         }
         base.Dispose(disposing);
