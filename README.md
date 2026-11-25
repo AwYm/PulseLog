@@ -11,3 +11,13 @@ Get `PulseLog.exe` from the latest [GitHub Release](../../releases/latest). It r
 3. Choose **Export CSV** during or after the session to save a copy. **Open logs** opens the folder where sessions are saved automatically.
 
 CSV files include timestamps and heart rate. They also include sensor contact, energy expended, and RR intervals when the monitor sends those fields.
+
+## Build from source
+
+With the .NET 8 SDK installed, run this command from the repository root.
+
+```powershell
+dotnet publish src/PulseLog/HeartRateLogger.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=embedded -o dist
+```
+
+The executable will be at `dist/PulseLog.exe`.

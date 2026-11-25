@@ -1,0 +1,37 @@
+name: Build Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Tag of an existing draft release
+        required: true
+        type: string
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.428'
+      - name: Build standalone Windows x64 executable
+        run: >
+          dotnet publish src/PulseLog/HeartRateLogger.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=embedded -o dist
+      - name: Attach executable to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          is_draft=$(gh release view --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft -- "$RELEASE_TAG")
+          if [[ "$is_draft" != true ]]; then
+            echo "Create a draft release before attaching the executable."
+            exit 1
+          fi
+          gh release upload --repo "$GITHUB_REPOSITORY" -- "$RELEASE_TAG" dist/PulseLog.exe
