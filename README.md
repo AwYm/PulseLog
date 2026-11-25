@@ -14,9 +14,9 @@ Get `PulseLog.exe` from the latest [GitHub Release](https://github.com/AwYm/Puls
 
 CSV files include timestamps and heart rate. They also include sensor contact, energy expended, and RR intervals when the monitor sends those fields.
 
-Pulse Log opens in dark mode. Select **Light mode** in the header to switch themes, or **Dark mode** to switch back.
+Pulse Log opens on **Dashboard** in dark mode. Open **Settings** and select **Light mode** to switch themes, or **Dark mode** to switch back.
 
-Minimize the window to keep Pulse Log running in the Windows system tray. Turn on **Close to tray** in the header to hide the window when you click X. Pulse Log remembers this choice beside the executable. Double-click its tray icon to reopen the window. The tray menu also offers **Pause recording**, **Resume recording**, and **Exit Pulse Log**.
+Minimize the window to keep Pulse Log running in the Windows system tray. Turn on **Close to tray** in **Settings** to hide the window when you click X. Pulse Log remembers this choice beside the executable. Double-click its tray icon to reopen the window. The tray menu also offers **Pause recording**, **Resume recording**, and **Exit Pulse Log**.
 
 ## Build from source
 

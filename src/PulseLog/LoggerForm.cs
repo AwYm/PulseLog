@@ -44,6 +44,9 @@ internal sealed partial class LoggerForm : Form
     private readonly List<RadioButton> _chartModes = new();
     private readonly Label _deviceStatus;
     private readonly Label _fileStatus;
+    private readonly Label _settingsStatus;
+    private readonly RadioButton _dashboardTab = MakeTab("Dashboard");
+    private readonly RadioButton _settingsTab = MakeTab("Settings");
     private readonly CheckBox _closeToTray = new()
     {
         Text = "Close to tray",
@@ -52,7 +55,7 @@ internal sealed partial class LoggerForm : Form
         FlatStyle = FlatStyle.Flat,
         UseVisualStyleBackColor = false,
         Font = new Font("Segoe UI", 9.5f),
-        Margin = new Padding(0, 7, 14, 4)
+        Margin = Padding.Empty
     };
     private readonly Button _themeToggle = MakeButton("Light mode");
     private readonly Button _scan = MakeButton("Scan");
@@ -89,6 +92,7 @@ internal sealed partial class LoggerForm : Form
     {
         _deviceStatus = MakeLabel(9.5f, FontStyle.Regular, tone: LabelTone.Muted);
         _fileStatus = MakeLabel(9.5f, FontStyle.Regular, tone: LabelTone.Muted);
+        _settingsStatus = MakeLabel(9.5f, FontStyle.Regular, tone: LabelTone.Muted);
         _minimum = MakeLabel(17, FontStyle.Bold);
         _maximum = MakeLabel(17, FontStyle.Bold);
         _average = MakeLabel(17, FontStyle.Bold);
@@ -106,34 +110,28 @@ internal sealed partial class LoggerForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 2,
             Padding = new Padding(28, 18, 28, 14)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 99));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 144));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
 
         layout.Controls.Add(BuildHeader(), 0, 0);
-        layout.Controls.Add(BuildDevices(), 0, 1);
-        layout.Controls.Add(BuildSummary(), 0, 2);
-        layout.Controls.Add(BuildChart(), 0, 3);
-        layout.Controls.Add(BuildFooter(), 0, 4);
+        layout.Controls.Add(BuildPages(), 0, 1);
         Controls.Add(layout);
         InitializeTray();
         _closeToTray.Checked = TrayPreference.Load();
-        _hints.SetToolTip(_closeToTray, "Use the X button to hide the window in the system tray.");
         _closeToTray.CheckedChanged += (_, _) =>
         {
             try
             {
                 TrayPreference.Save(_closeToTray.Checked);
+                SetStatus(_settingsStatus, string.Empty, error: false);
             }
             catch (Exception error) when (IsFileError(error))
             {
-                SetFileStatus($"Could not save Close to tray. {DescribeStorageError(error)}", error: true);
+                SetStatus(_settingsStatus, $"Could not save Close to tray. {DescribeStorageError(error)}", error: true);
             }
         };
 
@@ -172,20 +170,114 @@ internal sealed partial class LoggerForm : Form
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 7),
-            ColumnCount = 3,
+            ColumnCount = 2,
             RowCount = 2
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 206));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
         header.Controls.Add(MakeLabel(30, FontStyle.Bold, "Pulse Log"), 0, 0);
         header.Controls.Add(MakeLabel(10.5f, FontStyle.Regular, "Bluetooth heart rate logger", LabelTone.Muted), 0, 1);
-        _themeToggle.Margin = new Padding(0, 7, 0, 4);
-        header.Controls.Add(_closeToTray, 1, 0);
-        header.Controls.Add(_themeToggle, 2, 0);
+
+        var tabs = new TableLayoutPanel
+        {
+            AccessibleName = "Pulse Log pages",
+            AccessibleRole = AccessibleRole.PageTabList,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 7, 0, 4),
+            ColumnCount = 2,
+            RowCount = 1
+        };
+        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
+        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
+        _dashboardTab.Margin = new Padding(0, 0, 6, 0);
+        _dashboardTab.CheckedChanged += (_, _) => StyleChoiceButton(_dashboardTab);
+        _settingsTab.CheckedChanged += (_, _) => StyleChoiceButton(_settingsTab);
+        tabs.Controls.Add(_dashboardTab, 0, 0);
+        tabs.Controls.Add(_settingsTab, 1, 0);
+        _dashboardTab.Checked = true;
+        header.Controls.Add(tabs, 1, 0);
         return header;
+    }
+
+    private Control BuildPages()
+    {
+        var pages = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        var dashboard = BuildDashboard();
+        var settings = BuildSettings();
+        settings.Visible = false;
+        pages.Controls.Add(settings);
+        pages.Controls.Add(dashboard);
+        _settingsTab.CheckedChanged += (_, _) =>
+        {
+            dashboard.Visible = !_settingsTab.Checked;
+            settings.Visible = _settingsTab.Checked;
+        };
+        return pages;
+    }
+
+    private Control BuildDashboard()
+    {
+        var dashboard = new TableLayoutPanel
+        {
+            AccessibleName = "Dashboard",
+            AccessibleRole = AccessibleRole.PropertyPage,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            ColumnCount = 1,
+            RowCount = 4
+        };
+        dashboard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        dashboard.RowStyles.Add(new RowStyle(SizeType.Absolute, 99));
+        dashboard.RowStyles.Add(new RowStyle(SizeType.Absolute, 144));
+        dashboard.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        dashboard.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+        dashboard.Controls.Add(BuildDevices(), 0, 0);
+        dashboard.Controls.Add(BuildSummary(), 0, 1);
+        dashboard.Controls.Add(BuildChart(), 0, 2);
+        dashboard.Controls.Add(BuildFooter(), 0, 3);
+        return dashboard;
+    }
+
+    private Control BuildSettings()
+    {
+        var settings = new TableLayoutPanel
+        {
+            AccessibleName = "Settings",
+            AccessibleRole = AccessibleRole.PropertyPage,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            ColumnCount = 1,
+            RowCount = 4
+        };
+        settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 83));
+        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        settings.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var appearance = MakeCard(2, 1);
+        appearance.Padding = new Padding(16, 12, 16, 12);
+        appearance.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        appearance.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+        appearance.Controls.Add(MakeLabel(11, FontStyle.Bold, "Appearance"), 0, 0);
+        appearance.Controls.Add(_themeToggle, 1, 0);
+        settings.Controls.Add(appearance, 0, 0);
+
+        var window = MakeCard(2, 2);
+        window.Padding = new Padding(16, 10, 16, 10);
+        window.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        window.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
+        window.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        window.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        window.Controls.Add(MakeLabel(11, FontStyle.Bold, "Window behavior"), 0, 0);
+        window.Controls.Add(MakeLabel(9.5f, FontStyle.Regular, "Hide Pulse Log in the system tray when you click X.", LabelTone.Muted), 0, 1);
+        window.Controls.Add(_closeToTray, 1, 0);
+        window.SetRowSpan(_closeToTray, 2);
+        settings.Controls.Add(window, 0, 1);
+        settings.Controls.Add(_settingsStatus, 0, 2);
+        return settings;
     }
 
     private Control BuildDevices()
@@ -292,7 +384,7 @@ internal sealed partial class LoggerForm : Form
             };
             button.CheckedChanged += (_, _) =>
             {
-                ApplyChartButtonTheme(button);
+                StyleChoiceButton(button);
                 if (button.Checked)
                 {
                     _chart.SetMode(option.Mode);
@@ -721,8 +813,10 @@ internal sealed partial class LoggerForm : Form
         }
         foreach (var button in _chartModes)
         {
-            ApplyChartButtonTheme(button);
+            StyleChoiceButton(button);
         }
+        StyleChoiceButton(_dashboardTab);
+        StyleChoiceButton(_settingsTab);
         foreach (var combo in new[] { _devices, _chartWindow })
         {
             combo.ApplyTheme(palette, _darkMode);
@@ -764,7 +858,7 @@ internal sealed partial class LoggerForm : Form
         button.FlatAppearance.MouseDownBackColor = accent ? palette.PrimaryPressed : palette.Tint;
     }
 
-    private void ApplyChartButtonTheme(RadioButton button)
+    private void StyleChoiceButton(RadioButton button)
     {
         var palette = Palette;
         button.BackColor = button.Checked ? palette.Tint : palette.Surface;
@@ -955,6 +1049,19 @@ internal sealed partial class LoggerForm : Form
         Dock = DockStyle.Fill,
         Margin = Padding.Empty,
         FlatStyle = FlatStyle.Flat,
+        UseVisualStyleBackColor = false,
+        Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+    };
+
+    private static RadioButton MakeTab(string text) => new()
+    {
+        Text = text,
+        AccessibleRole = AccessibleRole.PageTab,
+        Appearance = Appearance.Button,
+        Dock = DockStyle.Fill,
+        Margin = Padding.Empty,
+        FlatStyle = FlatStyle.Flat,
+        TextAlign = ContentAlignment.MiddleCenter,
         UseVisualStyleBackColor = false,
         Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
     };
