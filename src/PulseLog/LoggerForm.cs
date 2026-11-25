@@ -4,33 +4,57 @@ using System.Runtime.InteropServices;
 
 namespace HeartRateLogger;
 
-internal sealed class LoggerForm : Form
+internal sealed partial class LoggerForm : Form
 {
-    private static readonly Color Canvas = Color.FromArgb(245, 246, 242);
-    private static readonly Color Paper = Color.White;
-    private static readonly Color Ink = Color.FromArgb(16, 45, 40);
-    private static readonly Color Subtle = Color.FromArgb(76, 102, 93);
-    private static readonly Color Green = Color.FromArgb(20, 99, 78);
-    private static readonly Color Tint = Color.FromArgb(224, 240, 230);
-    private static readonly Color Border = Color.FromArgb(210, 223, 215);
-    private static readonly Color ErrorInk = Color.FromArgb(153, 48, 42);
+    private const int ImmersiveDarkModeAttribute = 20;
+
+    private static readonly ThemePalette DarkPalette = new(
+        Canvas: Color.FromArgb(17, 25, 23),
+        Surface: Color.FromArgb(27, 39, 35),
+        Ink: Color.FromArgb(228, 241, 234),
+        Muted: Color.FromArgb(171, 192, 182),
+        Accent: Color.FromArgb(140, 221, 173),
+        Tint: Color.FromArgb(38, 59, 50),
+        Border: Color.FromArgb(67, 91, 80),
+        Error: Color.FromArgb(255, 170, 157),
+        PrimaryInk: Color.FromArgb(17, 33, 26),
+        PrimaryHover: Color.FromArgb(164, 231, 191),
+        PrimaryPressed: Color.FromArgb(111, 190, 146));
+
+    private static readonly ThemePalette LightPalette = new(
+        Canvas: Color.FromArgb(245, 246, 242),
+        Surface: Color.White,
+        Ink: Color.FromArgb(16, 45, 40),
+        Muted: Color.FromArgb(76, 102, 93),
+        Accent: Color.FromArgb(20, 99, 78),
+        Tint: Color.FromArgb(224, 240, 230),
+        Border: Color.FromArgb(210, 223, 215),
+        Error: Color.FromArgb(153, 48, 42),
+        PrimaryInk: Color.White,
+        PrimaryHover: Color.FromArgb(23, 115, 89),
+        PrimaryPressed: Color.FromArgb(16, 45, 40));
 
     private readonly CancellationTokenSource _lifetime = new();
     private readonly ToolTip _hints = new();
-    private readonly ComboBox _devices = new();
-    private readonly ComboBox _chartWindow = new();
-    private readonly Label _deviceStatus = MakeLabel(9.5f, FontStyle.Regular, Subtle);
-    private readonly Label _fileStatus = MakeLabel(9.5f, FontStyle.Regular, Subtle);
-    private readonly Button _scan = MakeButton("Scan", false);
-    private readonly Button _connect = MakeButton("Connect", true);
-    private readonly Button _recording = MakeButton("Pause recording", false);
-    private readonly Button _openLogs = MakeButton("Open folder", false);
-    private readonly Button _export = MakeButton("Export CSV", true);
+    private readonly ThemeComboBox _devices = new();
+    private readonly ThemeComboBox _chartWindow = new();
+    private readonly List<Label> _labels = new();
+    private readonly List<TableLayoutPanel> _cards = new();
+    private readonly List<TableLayoutPanel> _metricTiles = new();
+    private readonly List<RadioButton> _chartModes = new();
+    private readonly Label _deviceStatus;
+    private readonly Label _fileStatus;
+    private readonly Button _themeToggle = MakeButton("Light mode");
+    private readonly Button _scan = MakeButton("Scan");
+    private readonly Button _connect = MakeButton("Connect");
+    private readonly Button _recording = MakeButton("Pause recording");
+    private readonly Button _openLogs = MakeButton("Open folder");
+    private readonly Button _export = MakeButton("Export CSV");
     private readonly HeartRateHero _hero = new();
     private readonly HeartRateChart _chart = new();
-    private readonly Label _minimum = MakeLabel(17, FontStyle.Bold, Ink);
-    private readonly Label _maximum = MakeLabel(17, FontStyle.Bold, Ink);
-    private readonly Label _average = MakeLabel(17, FontStyle.Bold, Ink);
+    private readonly Label _minimum;
+    private readonly Label _maximum;
+    private readonly Label _average;
 
     private HeartRateMonitorClient? _client;
     private SessionLog? _activeLog;
@@ -42,15 +66,22 @@ internal sealed class LoggerForm : Form
     private bool _exporting;
     private bool _recordingPaused;
     private bool _hasLiveReading;
+    private bool _darkMode = true;
     private volatile bool _closing;
     private string? _connectedName;
     private long _sampleCount;
     private int _minBpm;
     private int _maxBpm;
     private double _meanBpm;
+    private ThemePalette Palette => _darkMode ? DarkPalette : LightPalette;
 
     internal LoggerForm()
     {
+        _deviceStatus = MakeLabel(9.5f, FontStyle.Regular, tone: LabelTone.Muted);
+        _fileStatus = MakeLabel(9.5f, FontStyle.Regular, tone: LabelTone.Muted);
+        _minimum = MakeLabel(17, FontStyle.Bold);
+        _maximum = MakeLabel(17, FontStyle.Bold);
+        _average = MakeLabel(17, FontStyle.Bold);
         Text = "Pulse Log";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
         StartPosition = FormStartPosition.CenterScreen;
@@ -58,8 +89,8 @@ internal sealed class LoggerForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(1000, 743);
         MinimumSize = new Size(740, 680);
-        BackColor = Canvas;
-        ForeColor = Ink;
+        BackColor = Palette.Canvas;
+        ForeColor = Palette.Ink;
 
         var layout = new TableLayoutPanel
         {
@@ -81,7 +112,13 @@ internal sealed class LoggerForm : Form
         layout.Controls.Add(BuildChart(), 0, 3);
         layout.Controls.Add(BuildFooter(), 0, 4);
         Controls.Add(layout);
+        InitializeTray();
 
+        _themeToggle.Click += (_, _) =>
+        {
+            _darkMode = !_darkMode;
+            ApplyTheme();
+        };
         _scan.Click += async (_, _) => await ScanAsync();
         _connect.Click += async (_, _) =>
         {
@@ -103,22 +140,26 @@ internal sealed class LoggerForm : Form
         _hero.SetReading(null);
         UpdateStatsValues();
         UpdateButtons();
+        ApplyTheme();
     }
 
-    private static Control BuildHeader()
+    private Control BuildHeader()
     {
         var header = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 7),
-            ColumnCount = 1,
+            ColumnCount = 2,
             RowCount = 2
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-        header.Controls.Add(MakeLabel(30, FontStyle.Bold, Ink, "Pulse Log"), 0, 0);
-        header.Controls.Add(MakeLabel(10.5f, FontStyle.Regular, Subtle, "Bluetooth heart rate logger"), 0, 1);
+        header.Controls.Add(MakeLabel(30, FontStyle.Bold, "Pulse Log"), 0, 0);
+        header.Controls.Add(MakeLabel(10.5f, FontStyle.Regular, "Bluetooth heart rate logger", LabelTone.Muted), 0, 1);
+        _themeToggle.Margin = new Padding(0, 7, 0, 4);
+        header.Controls.Add(_themeToggle, 1, 0);
         return header;
     }
 
@@ -133,16 +174,13 @@ internal sealed class LoggerForm : Form
         card.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         card.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        var heading = MakeLabel(11, FontStyle.Bold, Ink, "Heart rate monitor");
+        var heading = MakeLabel(11, FontStyle.Bold, "Heart rate monitor");
         card.Controls.Add(heading, 0, 0);
         card.SetColumnSpan(heading, 4);
 
         _devices.AccessibleName = "Bluetooth heart rate monitor";
         _devices.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _devices.DropDownStyle = ComboBoxStyle.DropDownList;
-        _devices.FlatStyle = FlatStyle.Flat;
-        _devices.BackColor = Canvas;
-        _devices.ForeColor = Ink;
+        ConfigureComboBox(_devices);
         _devices.Margin = new Padding(0, 0, 8, 0);
         _devices.DisplayMember = nameof(HeartRateMonitorInfo.DisplayName);
         _devices.SelectedIndexChanged += (_, _) => UpdateButtons();
@@ -181,7 +219,7 @@ internal sealed class LoggerForm : Form
         stats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
         stats.RowStyles.Add(new RowStyle(SizeType.Absolute, 29));
         stats.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var statsHeading = MakeLabel(11, FontStyle.Bold, Ink, "Session stats · BPM");
+        var statsHeading = MakeLabel(11, FontStyle.Bold, "Session stats · BPM");
         stats.Controls.Add(statsHeading, 0, 0);
         stats.SetColumnSpan(statsHeading, 3);
         stats.Controls.Add(BuildStat("Minimum", _minimum), 0, 1);
@@ -222,23 +260,20 @@ internal sealed class LoggerForm : Form
                 Appearance = Appearance.Button,
                 TextAlign = ContentAlignment.MiddleCenter,
                 FlatStyle = FlatStyle.Flat,
+                UseVisualStyleBackColor = false,
                 Font = new Font("Segoe UI", 9.5f),
                 Size = new Size(option.Width, 28),
                 Margin = new Padding(0, 0, 4, 0)
             };
-            button.FlatAppearance.BorderColor = Border;
-            button.FlatAppearance.CheckedBackColor = Tint;
-            button.FlatAppearance.MouseOverBackColor = Canvas;
-            button.FlatAppearance.MouseDownBackColor = Tint;
             button.CheckedChanged += (_, _) =>
             {
-                button.ForeColor = button.Checked ? Green : Ink;
-                button.FlatAppearance.BorderColor = button.Checked ? Green : Border;
+                ApplyChartButtonTheme(button);
                 if (button.Checked)
                 {
                     _chart.SetMode(option.Mode);
                 }
             };
+            _chartModes.Add(button);
             toolbar.Controls.Add(button);
             if (option.Mode == HeartRateChartMode.Range)
             {
@@ -247,10 +282,7 @@ internal sealed class LoggerForm : Form
         }
 
         _chartWindow.AccessibleName = "Chart time range";
-        _chartWindow.DropDownStyle = ComboBoxStyle.DropDownList;
-        _chartWindow.FlatStyle = FlatStyle.Flat;
-        _chartWindow.BackColor = Canvas;
-        _chartWindow.ForeColor = Ink;
+        ConfigureComboBox(_chartWindow);
         _chartWindow.Font = new Font("Segoe UI", 9.5f);
         _chartWindow.Width = 146;
         _chartWindow.Margin = new Padding(8, 2, 0, 0);
@@ -600,7 +632,7 @@ internal sealed class LoggerForm : Form
         }
     }
 
-    private static TableLayoutPanel BuildStat(string name, Label value)
+    private TableLayoutPanel BuildStat(string name, Label value)
     {
         var metric = new TableLayoutPanel
         {
@@ -608,18 +640,18 @@ internal sealed class LoggerForm : Form
             Margin = new Padding(3, 0, 3, 0),
             Padding = new Padding(3, 7, 3, 7),
             ColumnCount = 1,
-            RowCount = 2,
-            BackColor = Canvas
+            RowCount = 2
         };
         metric.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         metric.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
         metric.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var caption = MakeLabel(9.5f, FontStyle.Regular, Subtle, name);
+        var caption = MakeLabel(9.5f, FontStyle.Regular, name, LabelTone.Muted);
         caption.TextAlign = ContentAlignment.MiddleCenter;
         value.AccessibleName = $"Session {name.ToLowerInvariant()} heart rate in BPM";
         value.TextAlign = ContentAlignment.MiddleCenter;
         metric.Controls.Add(caption, 0, 0);
         metric.Controls.Add(value, 0, 1);
+        _metricTiles.Add(metric);
         return metric;
     }
 
@@ -636,19 +668,115 @@ internal sealed class LoggerForm : Form
         _scan.Enabled = !active && !_scanning && !_connecting;
         _scan.Text = _scanning ? "Scanning…" : "Scan";
         _devices.Enabled = !active && !_scanning && !_connecting && _devices.Items.Count > 0;
-        SetPrimaryButtonEnabled(_connect, !_scanning && !_connecting && (active || _devices.SelectedItem is not null));
+        _connect.Enabled = !_scanning && !_connecting && (active || _devices.SelectedItem is not null);
         _connect.Text = active ? "Disconnect" : _connecting ? "Connecting…" : "Connect";
         _recording.Enabled = active;
         _recording.Text = _recordingPaused ? "Resume recording" : "Pause recording";
-        SetPrimaryButtonEnabled(_export, _lastLog is not null && _sampleCount > 0 && !_exporting);
+        _export.Enabled = _lastLog is not null && _sampleCount > 0 && !_exporting;
+        ApplyButtonTheme();
+        RefreshTray();
     }
 
-    private static void SetPrimaryButtonEnabled(Button button, bool enabled)
+    private void ApplyTheme()
     {
-        button.Enabled = enabled;
-        button.BackColor = enabled ? Green : Tint;
-        button.ForeColor = enabled ? Paper : Subtle;
-        button.FlatAppearance.BorderColor = enabled ? Green : Border;
+        var palette = Palette;
+        BackColor = palette.Canvas;
+        ForeColor = palette.Ink;
+        foreach (var card in _cards)
+        {
+            card.BackColor = palette.Surface;
+        }
+        foreach (var tile in _metricTiles)
+        {
+            tile.BackColor = palette.Canvas;
+        }
+        foreach (var label in _labels)
+        {
+            ApplyLabelTheme(label);
+        }
+        foreach (var button in _chartModes)
+        {
+            ApplyChartButtonTheme(button);
+        }
+        foreach (var combo in new[] { _devices, _chartWindow })
+        {
+            combo.ApplyTheme(palette, _darkMode);
+        }
+        _themeToggle.Text = _darkMode ? "Light mode" : "Dark mode";
+        ApplyButtonTheme();
+        _hero.SetDarkMode(_darkMode);
+        _chart.SetDarkMode(_darkMode);
+        _hints.BackColor = palette.Surface;
+        _hints.ForeColor = palette.Ink;
+        ApplyTrayTheme();
+        ApplyTitleBarTheme();
+    }
+
+    private void ApplyButtonTheme()
+    {
+        StyleButton(_themeToggle);
+        StyleButton(_scan);
+        StyleButton(_connect, primary: true);
+        StyleButton(_recording);
+        StyleButton(_openLogs);
+        StyleButton(_export, primary: true);
+    }
+
+    private void StyleButton(Button button, bool primary = false)
+    {
+        var palette = Palette;
+        var accent = primary && button.Enabled;
+        button.BackColor = accent ? palette.Accent : primary ? palette.Tint : palette.Surface;
+        button.ForeColor = accent ? palette.PrimaryInk : button.Enabled ? palette.Ink : palette.Muted;
+        button.FlatAppearance.BorderColor = accent ? palette.Accent : palette.Border;
+        button.FlatAppearance.MouseOverBackColor = accent ? palette.PrimaryHover : palette.Canvas;
+        button.FlatAppearance.MouseDownBackColor = accent ? palette.PrimaryPressed : palette.Tint;
+    }
+
+    private void ApplyChartButtonTheme(RadioButton button)
+    {
+        var palette = Palette;
+        button.BackColor = button.Checked ? palette.Tint : palette.Surface;
+        button.ForeColor = button.Checked ? palette.Accent : palette.Ink;
+        button.FlatAppearance.BorderColor = button.Checked ? palette.Accent : palette.Border;
+        button.FlatAppearance.CheckedBackColor = palette.Tint;
+        button.FlatAppearance.MouseOverBackColor = palette.Canvas;
+        button.FlatAppearance.MouseDownBackColor = palette.Tint;
+    }
+
+    private void ApplyLabelTheme(Label label)
+    {
+        label.ForeColor = label.Tag switch
+        {
+            LabelTone.Muted => Palette.Muted,
+            LabelTone.Error => Palette.Error,
+            _ => Palette.Ink
+        };
+    }
+
+    private void ConfigureComboBox(ComboBox combo)
+    {
+        combo.DropDownStyle = ComboBoxStyle.DropDownList;
+        combo.FlatStyle = FlatStyle.Flat;
+        combo.DrawMode = DrawMode.OwnerDrawFixed;
+        combo.DrawItem += (_, e) =>
+        {
+            var selected = (e.State & DrawItemState.Selected) != 0 && (e.State & DrawItemState.ComboBoxEdit) == 0;
+            var palette = Palette;
+            using var background = new SolidBrush(selected ? palette.Tint : palette.Canvas);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            if (e.Index >= 0 && e.Index < combo.Items.Count)
+            {
+                var ink = selected ? palette.Accent : combo.Enabled ? palette.Ink : palette.Muted;
+                var bounds = Rectangle.Inflate(e.Bounds, -3, 0);
+                TextRenderer.DrawText(e.Graphics, combo.GetItemText(combo.Items[e.Index]), combo.Font, bounds, ink,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+            if (selected)
+            {
+                e.DrawFocusRectangle();
+            }
+        };
     }
 
     private void SetDeviceStatus(string message, bool error = false) => SetStatus(_deviceStatus, message, error);
@@ -656,7 +784,8 @@ internal sealed class LoggerForm : Form
 
     private void SetStatus(Label label, string message, bool error)
     {
-        label.ForeColor = error ? ErrorInk : Subtle;
+        label.Tag = error ? LabelTone.Error : LabelTone.Muted;
+        ApplyLabelTheme(label);
         label.Text = message;
         _hints.SetToolTip(label, message);
     }
@@ -694,6 +823,24 @@ internal sealed class LoggerForm : Form
         }
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyTitleBarTheme();
+    }
+
+    private void ApplyTitleBarTheme()
+    {
+        if (IsHandleCreated)
+        {
+            var enabled = _darkMode ? 1 : 0;
+            DwmSetWindowAttribute(Handle, ImmersiveDarkModeAttribute, ref enabled, sizeof(int));
+        }
+    }
+
+    [DllImport("dwmapi.dll", ExactSpelling = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int valueSize);
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
@@ -703,6 +850,7 @@ internal sealed class LoggerForm : Form
         }
 
         _closing = true;
+        DisposeTray();
         _lifetime.Cancel();
         _client?.Dispose();
         try
@@ -731,45 +879,128 @@ internal sealed class LoggerForm : Form
         ? "Move PulseLog.exe to a folder you can write to, then try again."
         : error.Message;
 
-    private static TableLayoutPanel MakeCard(int columns, int rows) => new()
+    private TableLayoutPanel MakeCard(int columns, int rows)
     {
-        BackColor = Paper,
-        Dock = DockStyle.Fill,
-        Padding = new Padding(15, 8, 15, 7),
-        Margin = new Padding(0, 0, 0, 12),
-        ColumnCount = columns,
-        RowCount = rows
-    };
-
-    private static Label MakeLabel(float points, FontStyle style, Color color, string text = "") => new()
-    {
-        AutoEllipsis = true,
-        Dock = DockStyle.Fill,
-        TextAlign = ContentAlignment.MiddleLeft,
-        Margin = Padding.Empty,
-        ForeColor = color,
-        Font = new Font("Segoe UI", points, style),
-        Text = text,
-        UseMnemonic = false
-    };
-
-    private static Button MakeButton(string text, bool primary)
-    {
-        var button = new Button
+        var card = new TableLayoutPanel
         {
-            Text = text,
             Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
-            FlatStyle = FlatStyle.Flat,
-            UseVisualStyleBackColor = false,
-            BackColor = primary ? Green : Paper,
-            ForeColor = primary ? Paper : Ink,
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+            Padding = new Padding(15, 8, 15, 7),
+            Margin = new Padding(0, 0, 0, 12),
+            ColumnCount = columns,
+            RowCount = rows
         };
-        button.FlatAppearance.BorderColor = primary ? Green : Border;
-        button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(23, 115, 89) : Canvas;
-        button.FlatAppearance.MouseDownBackColor = primary ? Ink : Tint;
-        return button;
+        _cards.Add(card);
+        return card;
     }
 
+    private Label MakeLabel(float points, FontStyle style, string text = "", LabelTone tone = LabelTone.Normal)
+    {
+        var label = new Label
+        {
+            AutoEllipsis = true,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = Padding.Empty,
+            Font = new Font("Segoe UI", points, style),
+            Text = text,
+            UseMnemonic = false,
+            Tag = tone
+        };
+        _labels.Add(label);
+        return label;
+    }
+
+    private static Button MakeButton(string text) => new ThemeButton
+    {
+        Text = text,
+        Dock = DockStyle.Fill,
+        Margin = Padding.Empty,
+        FlatStyle = FlatStyle.Flat,
+        UseVisualStyleBackColor = false,
+        Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+    };
+
+    private sealed class ThemeButton : Button
+    {
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (Enabled)
+            {
+                return;
+            }
+
+            // Keep the disabled caption legible on the app's own background.
+            var bounds = Rectangle.Inflate(ClientRectangle, -2, -2);
+            using var background = new SolidBrush(BackColor);
+            e.Graphics.FillRectangle(background, bounds);
+            TextRenderer.DrawText(e.Graphics, Text, Font, bounds, ForeColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    private sealed class ThemeComboBox : ComboBox
+    {
+        private const int PaintMessage = 0x000F;
+        private ThemePalette? _darkPalette;
+
+        internal void ApplyTheme(ThemePalette palette, bool darkMode)
+        {
+            _darkPalette = darkMode ? palette : null;
+            BackColor = palette.Canvas;
+            ForeColor = palette.Ink;
+            Invalidate();
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            base.WndProc(ref message);
+            if (message.Msg != PaintMessage || _darkPalette is not { } palette || !IsHandleCreated)
+            {
+                return;
+            }
+
+            var bounds = ClientRectangle;
+            int arrowWidth = LogicalToDeviceUnits(20);
+            int inset = LogicalToDeviceUnits(6);
+            if (bounds.Width <= arrowWidth + inset || bounds.Height < 2)
+            {
+                return;
+            }
+
+            // Style the closed field while the native control handles input and the popup.
+            using var graphics = Graphics.FromHwnd(Handle);
+            using var background = new SolidBrush(palette.Canvas);
+            graphics.FillRectangle(background, bounds);
+            using var border = new Pen(Focused ? palette.Accent : palette.Border);
+            graphics.DrawRectangle(border, bounds.Left, bounds.Top, bounds.Width - 1, bounds.Height - 1);
+
+            int centerX = bounds.Right - arrowWidth / 2;
+            int centerY = bounds.Top + bounds.Height / 2;
+            int arrowSize = LogicalToDeviceUnits(3);
+            var ink = Enabled ? palette.Ink : palette.Muted;
+            using var arrow = new Pen(ink, Math.Max(1, LogicalToDeviceUnits(1)));
+            graphics.DrawLines(arrow, new Point[]
+            {
+                new Point(centerX - arrowSize, centerY - 1),
+                new Point(centerX, centerY + arrowSize - 1),
+                new Point(centerX + arrowSize, centerY - 1)
+            });
+
+            var textBounds = new Rectangle(bounds.Left + inset, bounds.Top, bounds.Width - arrowWidth - inset, bounds.Height);
+            TextRenderer.DrawText(graphics, GetItemText(SelectedItem), Font, textBounds, ink,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+    }
+
+    private sealed record ThemePalette(
+        Color Canvas, Color Surface, Color Ink, Color Muted, Color Accent, Color Tint, Color Border,
+        Color Error, Color PrimaryInk, Color PrimaryHover, Color PrimaryPressed);
+
+    private enum LabelTone
+    {
+        Normal,
+        Muted,
+        Error
+    }
 }

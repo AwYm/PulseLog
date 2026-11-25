@@ -6,18 +6,37 @@ namespace HeartRateLogger;
 
 public sealed class HeartRateHero : Control
 {
-    private static readonly Color DarkGreen = Color.FromArgb(16, 45, 40);
-    private static readonly Color Bright = Color.FromArgb(246, 251, 244);
-    private static readonly Color Soft = Color.FromArgb(177, 209, 193);
-    private static readonly Color Mint = Color.FromArgb(182, 241, 207);
+    private static readonly Palette LightColors = new(
+        Panel: Color.FromArgb(16, 45, 40),
+        Reading: Color.FromArgb(246, 251, 244),
+        Label: Color.FromArgb(177, 209, 193),
+        Accent: Color.FromArgb(182, 241, 207),
+        OuterRing: Color.FromArgb(53, 99, 83),
+        InnerRing: Color.FromArgb(70, 124, 104),
+        MotifBackground: Color.FromArgb(34, 74, 64),
+        MotifDot: Color.FromArgb(134, 216, 174));
+    private static readonly Palette DarkColors = new(
+        Panel: Color.FromArgb(21, 55, 44),
+        Reading: Color.FromArgb(241, 252, 246),
+        Label: Color.FromArgb(185, 217, 202),
+        Accent: Color.FromArgb(167, 242, 203),
+        OuterRing: Color.FromArgb(49, 91, 76),
+        InnerRing: Color.FromArgb(68, 115, 96),
+        MotifBackground: Color.FromArgb(32, 74, 58),
+        MotifDot: Color.FromArgb(124, 207, 169));
 
     private readonly Font headingFont = new("Segoe UI Semibold", 12, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font valueFont = new("Segoe UI Semibold", 67, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font unitFont = new("Segoe UI Semibold", 19, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font detailFont = new("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel);
 
+    private Palette colors = LightColors;
     private int? heartRate;
     private bool sessionEnded;
+
+    private sealed record Palette(
+        Color Panel, Color Reading, Color Label, Color Accent,
+        Color OuterRing, Color InnerRing, Color MotifBackground, Color MotifDot);
 
     public HeartRateHero()
     {
@@ -38,6 +57,12 @@ public sealed class HeartRateHero : Control
         sessionEnded = false;
         AccessibleName = "Current heart rate";
         AccessibleDescription = heartRate is int rate ? $"{rate} beats per minute" : "Waiting for a reading";
+        Invalidate();
+    }
+
+    public void SetDarkMode(bool enabled)
+    {
+        colors = enabled ? DarkColors : LightColors;
         Invalidate();
     }
 
@@ -63,7 +88,7 @@ public sealed class HeartRateHero : Control
         GraphicsState state = graphics.Save();
         DashboardDrawing.Prepare(graphics, scale);
         using GraphicsPath panel = DashboardDrawing.RoundedRectangle(new RectangleF(0, 0, width, height), 15);
-        using var panelBrush = new SolidBrush(DarkGreen);
+        using var panelBrush = new SolidBrush(colors.Panel);
         graphics.FillPath(panelBrush, panel);
         graphics.SetClip(panel, CombineMode.Intersect);
 
@@ -75,29 +100,29 @@ public sealed class HeartRateHero : Control
         if (width >= Math.Max(385, left + valueWidth + 230) && height >= 95)
             DrawHeartMotif(graphics, width - 101, height / 2);
 
-        DashboardDrawing.Text(graphics, sessionEnded ? "LAST HEART RATE" : "CURRENT HEART RATE", headingFont, Soft, left, top);
-        DashboardDrawing.Text(graphics, value, valueFont, Bright, left - 2, top + 9);
+        DashboardDrawing.Text(graphics, sessionEnded ? "LAST HEART RATE" : "CURRENT HEART RATE", headingFont, colors.Label, left, top);
+        DashboardDrawing.Text(graphics, value, valueFont, colors.Reading, left - 2, top + 9);
         if (left + valueWidth + 54 < width)
-            DashboardDrawing.Text(graphics, "BPM", unitFont, Mint, left + valueWidth + 10, top + 49);
+            DashboardDrawing.Text(graphics, "BPM", unitFont, colors.Accent, left + valueWidth + 10, top + 49);
 
         if (heartRate is null)
         {
             string detail = sessionEnded ? "No reading available" : "Waiting for a reading";
-            DashboardDrawing.Text(graphics, detail, detailFont, Soft, left, top + 97);
+            DashboardDrawing.Text(graphics, detail, detailFont, colors.Label, left, top + 97);
         }
         graphics.Restore(state);
     }
 
-    private static void DrawHeartMotif(Graphics graphics, float centerX, float centerY)
+    private void DrawHeartMotif(Graphics graphics, float centerX, float centerY)
     {
-        using var outerRing = new Pen(Color.FromArgb(53, 99, 83), 1);
-        using var innerRing = new Pen(Color.FromArgb(70, 124, 104), 1);
-        using var circleBrush = new SolidBrush(Color.FromArgb(34, 74, 64));
+        using var outerRing = new Pen(colors.OuterRing, 1);
+        using var innerRing = new Pen(colors.InnerRing, 1);
+        using var circleBrush = new SolidBrush(colors.MotifBackground);
         graphics.DrawEllipse(outerRing, centerX - 70, centerY - 70, 140, 140);
         graphics.DrawEllipse(innerRing, centerX - 52, centerY - 52, 104, 104);
         graphics.FillEllipse(circleBrush, centerX - 34, centerY - 34, 68, 68);
 
-        using var dot = new SolidBrush(Color.FromArgb(134, 216, 174));
+        using var dot = new SolidBrush(colors.MotifDot);
         graphics.FillEllipse(dot, centerX + 46, centerY - 23, 5, 5);
         graphics.FillEllipse(dot, centerX - 52, centerY + 46, 4, 4);
 
@@ -108,7 +133,7 @@ public sealed class HeartRateHero : Control
         heart.AddBezier(centerX, centerY + 16, centerX + 8, centerY + 9, centerX + 18, centerY + 2, centerX + 18, centerY - 7);
         heart.AddBezier(centerX + 18, centerY - 7, centerX + 18, centerY - 17, centerX + 5, centerY - 20, centerX, centerY - 10);
         heart.CloseFigure();
-        using var heartBrush = new SolidBrush(Mint);
+        using var heartBrush = new SolidBrush(colors.Accent);
         graphics.FillPath(heartBrush, heart);
     }
 
@@ -138,23 +163,39 @@ public sealed class HeartRateChart : Control
     private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(1);
     private static readonly TimeSpan TraceGap = TimeSpan.FromSeconds(15);
     private static readonly int[] TimeTickSteps = [15, 30, 60, 120, 180, 300, 600, 900, 1200, 1800, 3600];
-    private static readonly Color Paper = Color.FromArgb(255, 255, 252);
-    private static readonly Color Ink = Color.FromArgb(16, 45, 40);
-    private static readonly Color Muted = Color.FromArgb(75, 105, 98);
-    private static readonly Color Border = Color.FromArgb(219, 230, 221);
-    private static readonly Color Grid = Color.FromArgb(231, 239, 233);
-    private static readonly Color Green = Color.FromArgb(22, 129, 104);
-    private static readonly Color RangeLower = Color.FromArgb(86, 138, 119);
+    private static readonly Palette LightColors = new(
+        Panel: Color.FromArgb(255, 255, 252),
+        Heading: Color.FromArgb(16, 45, 40),
+        Label: Color.FromArgb(75, 105, 98),
+        Border: Color.FromArgb(219, 230, 221),
+        Grid: Color.FromArgb(231, 239, 233),
+        Trace: Color.FromArgb(22, 129, 104),
+        RangeLower: Color.FromArgb(86, 138, 119),
+        RangeFill: Color.FromArgb(64, 76, 186, 145));
+    private static readonly Palette DarkColors = new(
+        Panel: Color.FromArgb(24, 36, 33),
+        Heading: Color.FromArgb(232, 243, 236),
+        Label: Color.FromArgb(172, 196, 187),
+        Border: Color.FromArgb(51, 72, 64),
+        Grid: Color.FromArgb(41, 59, 52),
+        Trace: Color.FromArgb(117, 231, 183),
+        RangeLower: Color.FromArgb(141, 196, 175),
+        RangeFill: Color.FromArgb(73, 87, 211, 156));
 
     private readonly SortedList<(DateTimeOffset Timestamp, long Sequence), ChartReading> readings = new();
     private readonly Font titleFont = new("Segoe UI Semibold", 20, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font labelFont = new("Segoe UI", 11, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font axisFont = new("Segoe UI Semibold", 10, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font emptyFont = new("Segoe UI", 13, FontStyle.Regular, GraphicsUnit.Pixel);
+    private Palette colors = LightColors;
     private TimeSpan visibleWindow = TimeSpan.FromMinutes(2);
     private HeartRateChartMode mode = HeartRateChartMode.Range;
     private int trace;
     private long nextSequence;
+
+    private sealed record Palette(
+        Color Panel, Color Heading, Color Label, Color Border,
+        Color Grid, Color Trace, Color RangeLower, Color RangeFill);
 
     private readonly record struct ChartReading(int Bpm, int Trace);
     private readonly record struct ChartBucket(
@@ -193,6 +234,12 @@ public sealed class HeartRateChart : Control
 
         mode = chartMode;
         UpdateAccessibleDescription();
+        Invalidate();
+    }
+
+    public void SetDarkMode(bool enabled)
+    {
+        colors = enabled ? DarkColors : LightColors;
         Invalidate();
     }
 
@@ -260,13 +307,13 @@ public sealed class HeartRateChart : Control
         GraphicsState state = graphics.Save();
         DashboardDrawing.Prepare(graphics, scale);
         using GraphicsPath panel = DashboardDrawing.RoundedRectangle(new RectangleF(0.5f, 0.5f, width - 1, height - 1), 15);
-        using var panelBrush = new SolidBrush(Paper);
-        using var panelPen = new Pen(Border);
+        using var panelBrush = new SolidBrush(colors.Panel);
+        using var panelPen = new Pen(colors.Border);
         graphics.FillPath(panelBrush, panel);
         graphics.DrawPath(panelPen, panel);
         graphics.SetClip(panel, CombineMode.Intersect);
 
-        DashboardDrawing.Text(graphics, "Heart rate history", titleFont, Ink, 21, 15);
+        DashboardDrawing.Text(graphics, "Heart rate history", titleFont, colors.Heading, 21, 15);
 
         RectangleF plot = RectangleF.FromLTRB(55, 67, width - 25, height - 33);
         if (plot.Width >= 30 && plot.Height >= 16)
@@ -375,11 +422,11 @@ public sealed class HeartRateChart : Control
 
     private void DrawGrid(Graphics graphics, RectangleF plot, double lower, double upper, double step)
     {
-        using var gridPen = new Pen(Grid);
-        using var axisPen = new Pen(Border);
-        DashboardDrawing.Text(graphics, "BPM", axisFont, Muted, 21, plot.Top - 20);
+        using var gridPen = new Pen(colors.Grid);
+        using var axisPen = new Pen(colors.Border);
+        DashboardDrawing.Text(graphics, "BPM", axisFont, colors.Label, 21, plot.Top - 20);
         if (plot.Width >= 90)
-            DashboardDrawing.Text(graphics, IntervalLabel(), labelFont, Muted, plot.Left, plot.Top - 21);
+            DashboardDrawing.Text(graphics, IntervalLabel(), labelFont, colors.Label, plot.Left, plot.Top - 21);
         int labelStride = Math.Max(1, (int)Math.Ceiling(15 * (upper - lower) / step / plot.Height));
         int tickIndex = 0;
         for (double tick = lower; tick <= upper; tick += step, tickIndex++)
@@ -390,7 +437,7 @@ public sealed class HeartRateChart : Control
             {
                 string label = tick.ToString("0", CultureInfo.CurrentCulture);
                 float labelWidth = DashboardDrawing.TextWidth(graphics, label, labelFont);
-                DashboardDrawing.Text(graphics, label, labelFont, Muted, Math.Max(3, plot.Left - labelWidth - 10), y - 7);
+                DashboardDrawing.Text(graphics, label, labelFont, colors.Label, Math.Max(3, plot.Left - labelWidth - 10), y - 7);
             }
         }
 
@@ -408,7 +455,7 @@ public sealed class HeartRateChart : Control
                 _ => $"−{seconds} s"
             };
             float labelWidth = DashboardDrawing.TextWidth(graphics, label, labelFont);
-            DashboardDrawing.Text(graphics, label, labelFont, Muted, Math.Min(x - labelWidth / 2, plot.Right + 17 - labelWidth), plot.Bottom + 8);
+            DashboardDrawing.Text(graphics, label, labelFont, colors.Label, Math.Min(x - labelWidth / 2, plot.Right + 17 - labelWidth), plot.Bottom + 8);
         }
     }
 
@@ -419,11 +466,11 @@ public sealed class HeartRateChart : Control
         float left = plot.Left + (plot.Width - labelWidth) / 2;
         float top = plot.Top + (plot.Height - 15) / 2;
         using GraphicsPath badge = DashboardDrawing.RoundedRectangle(new RectangleF(left - 12, top - 6, labelWidth + 24, 29), 11);
-        using var fill = new SolidBrush(Paper);
-        using var outline = new Pen(Border);
+        using var fill = new SolidBrush(colors.Panel);
+        using var outline = new Pen(colors.Border);
         graphics.FillPath(fill, badge);
         graphics.DrawPath(outline, badge);
-        DashboardDrawing.Text(graphics, label, emptyFont, Muted, left, top);
+        DashboardDrawing.Text(graphics, label, emptyFont, colors.Label, left, top);
     }
 
     private void DrawReadings(Graphics graphics, RectangleF plot, double lower, double upper, List<ChartBucket> buckets)
@@ -431,12 +478,12 @@ public sealed class HeartRateChart : Control
         GraphicsState state = graphics.Save();
         RectangleF clip = RectangleF.Inflate(plot, 6, 6);
         graphics.SetClip(clip, CombineMode.Intersect);
-        using var line = new Pen(Green, 2.25f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
-        using var rangeLine = new Pen(RangeLower, 1.75f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
-        using var bandFill = new SolidBrush(Color.FromArgb(64, 76, 186, 145));
-        using var pointBrush = new SolidBrush(Green);
-        using var rangePointBrush = new SolidBrush(RangeLower);
-        using var markerRing = new SolidBrush(Paper);
+        using var line = new Pen(colors.Trace, 2.25f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var rangeLine = new Pen(colors.RangeLower, 1.75f) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var bandFill = new SolidBrush(colors.RangeFill);
+        using var pointBrush = new SolidBrush(colors.Trace);
+        using var rangePointBrush = new SolidBrush(colors.RangeLower);
+        using var markerRing = new SolidBrush(colors.Panel);
         DateTimeOffset latest = buckets[^1].LastTimestamp;
 
         int first = 0;
