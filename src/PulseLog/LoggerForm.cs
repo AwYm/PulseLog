@@ -239,11 +239,12 @@ internal sealed partial class LoggerForm : Form
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             ColumnCount = 1,
-            RowCount = 4
+            RowCount = 5
         };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 83));
+        settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
         settings.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         settings.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -266,7 +267,8 @@ internal sealed partial class LoggerForm : Form
         window.Controls.Add(_closeToTray, 1, 0);
         window.SetRowSpan(_closeToTray, 2);
         settings.Controls.Add(window, 0, 1);
-        settings.Controls.Add(_settingsStatus, 0, 2);
+        settings.Controls.Add(BuildMonitorDetails(), 0, 2);
+        settings.Controls.Add(_settingsStatus, 0, 3);
         return settings;
     }
 
@@ -541,6 +543,7 @@ internal sealed partial class LoggerForm : Form
 
             _lastLog = _activeLog;
             _connectedName = monitor.Name;
+            ShowMonitorConnected(monitor.Name);
             _recordingPaused = false;
             _hasLiveReading = false;
             _sampleCount = 0;
@@ -596,6 +599,7 @@ internal sealed partial class LoggerForm : Form
 
         var bpm = reading.BeatsPerMinute;
         _hero.SetReading(bpm);
+        UpdateMonitorDetails(reading);
         if (!_hasLiveReading)
         {
             _hasLiveReading = true;
@@ -672,6 +676,7 @@ internal sealed partial class LoggerForm : Form
         _activeLog = null;
         _recordingPaused = false;
         _connectedName = null;
+        ClearMonitorDetails();
         client?.Dispose();
 
         try
