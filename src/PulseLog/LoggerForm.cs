@@ -403,8 +403,13 @@ internal sealed partial class LoggerForm : Form
             (Label: "Last 5 minutes", Minutes: 5),
             (Label: "Last 15 minutes", Minutes: 15),
             (Label: "Last 30 minutes", Minutes: 30),
-            (Label: "Last hour", Minutes: 60)
+            (Label: "Last hour", Minutes: 60),
+            (Label: "Last 2 hours", Minutes: 120),
+            (Label: "Last 6 hours", Minutes: 360),
+            (Label: "Last 12 hours", Minutes: 720),
+            (Label: "Last 24 hours", Minutes: 1440)
         };
+        _chartWindow.MaxDropDownItems = windows.Length;
         _chartWindow.Items.AddRange(windows.Select(window => window.Label).ToArray());
         _chartWindow.SelectedIndexChanged += (_, _) =>
         {

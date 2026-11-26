@@ -160,9 +160,11 @@ public enum HeartRateChartMode
 
 public sealed class HeartRateChart : Control
 {
-    private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(1);
+    private const int ExpiredReadingBatchSize = 4096;
+    private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(24);
     private static readonly TimeSpan TraceGap = TimeSpan.FromSeconds(15);
-    private static readonly int[] TimeTickSteps = [15, 30, 60, 120, 180, 300, 600, 900, 1200, 1800, 3600];
+    private static readonly int[] TimeTickSteps =
+        [15, 30, 60, 120, 180, 300, 600, 900, 1200, 1800, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400];
     private static readonly Palette LightColors = new(
         Panel: Color.FromArgb(255, 255, 252),
         Heading: Color.FromArgb(16, 45, 40),
@@ -182,7 +184,7 @@ public sealed class HeartRateChart : Control
         RangeLower: Color.FromArgb(141, 196, 175),
         RangeFill: Color.FromArgb(73, 87, 211, 156));
 
-    private readonly SortedList<(DateTimeOffset Timestamp, long Sequence), ChartReading> readings = new();
+    private readonly List<ChartReading> readings = new();
     private readonly Font titleFont = new("Segoe UI Semibold", 20, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font labelFont = new("Segoe UI", 11, FontStyle.Regular, GraphicsUnit.Pixel);
     private readonly Font axisFont = new("Segoe UI Semibold", 10, FontStyle.Regular, GraphicsUnit.Pixel);
@@ -190,14 +192,14 @@ public sealed class HeartRateChart : Control
     private Palette colors = LightColors;
     private TimeSpan visibleWindow = TimeSpan.FromMinutes(2);
     private HeartRateChartMode mode = HeartRateChartMode.Range;
+    private int firstRetained;
     private int trace;
-    private long nextSequence;
 
     private sealed record Palette(
         Color Panel, Color Heading, Color Label, Color Border,
         Color Grid, Color Trace, Color RangeLower, Color RangeFill);
 
-    private readonly record struct ChartReading(int Bpm, int Trace);
+    private readonly record struct ChartReading(DateTimeOffset Timestamp, int Bpm, int Trace);
     private readonly record struct ChartBucket(
         DateTimeOffset FirstTimestamp, DateTimeOffset LastTimestamp,
         int Minimum, int Maximum, double Average, bool StartsTrace);
@@ -245,12 +247,44 @@ public sealed class HeartRateChart : Control
 
     public void AddReading(DateTimeOffset timestamp, int bpm)
     {
-        readings.Add((timestamp, nextSequence++), new ChartReading(bpm, trace));
-        DateTimeOffset latest = readings.Keys[^1].Timestamp;
-        while (latest - readings.Keys[0].Timestamp > RetentionWindow)
-            readings.RemoveAt(0);
+        var reading = new ChartReading(timestamp, bpm, trace);
+        if (readings.Count > 0 && timestamp < readings[^1].Timestamp)
+        {
+            if (readings[^1].Timestamp - timestamp > RetentionWindow)
+                return;
+            readings.Insert(FindInsertionIndex(timestamp), reading);
+        }
+        else
+        {
+            readings.Add(reading);
+            while (timestamp - readings[firstRetained].Timestamp > RetentionWindow)
+                firstRetained++;
+
+            // Drop expired samples in batches so the live trace does not shift a day's history every second.
+            if (firstRetained >= ExpiredReadingBatchSize)
+            {
+                readings.RemoveRange(0, firstRetained);
+                firstRetained = 0;
+            }
+        }
 
         Invalidate();
+    }
+
+    private int FindInsertionIndex(DateTimeOffset timestamp)
+    {
+        int low = firstRetained;
+        int high = readings.Count;
+        while (low < high)
+        {
+            int middle = low + (high - low) / 2;
+            if (readings[middle].Timestamp <= timestamp)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+
+        return low;
     }
 
     public void BreakTrace() => trace++;
@@ -258,16 +292,20 @@ public sealed class HeartRateChart : Control
     public void ClearReadings()
     {
         readings.Clear();
+        firstRetained = 0;
         trace = 0;
-        nextSequence = 0;
         Invalidate();
     }
 
     private void UpdateAccessibleDescription()
     {
-        string duration = visibleWindow == TimeSpan.FromMinutes(1)
-            ? "1 minute"
-            : $"{visibleWindow.TotalMinutes:0.##} minutes";
+        string duration = visibleWindow.TotalMinutes switch
+        {
+            1 => "1 minute",
+            60 => "1 hour",
+            > 60 => $"{visibleWindow.TotalHours:0.##} hours",
+            _ => $"{visibleWindow.TotalMinutes:0.##} minutes"
+        };
         string displayed = mode switch
         {
             HeartRateChartMode.Maximum => "Maximum heart rate",
@@ -285,13 +323,22 @@ public sealed class HeartRateChart : Control
         <= 5 => 15,
         <= 15 => 30,
         <= 30 => 60,
-        _ => 120
+        <= 60 => 120,
+        <= 120 => 300,
+        <= 360 => 900,
+        <= 720 => 1800,
+        _ => 3600
     });
 
     private string IntervalLabel()
     {
         TimeSpan duration = BucketDuration();
-        return duration.TotalMinutes >= 1 ? $"{duration.TotalMinutes:0} min intervals" : $"{duration.TotalSeconds:0} s intervals";
+        return duration.TotalMinutes switch
+        {
+            >= 60 => $"{duration.TotalHours:0} h intervals",
+            >= 1 => $"{duration.TotalMinutes:0} min intervals",
+            _ => $"{duration.TotalSeconds:0} s intervals"
+        };
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -335,14 +382,13 @@ public sealed class HeartRateChart : Control
         if (readings.Count == 0)
             return 0;
 
-        var times = readings.Keys;
-        DateTimeOffset latest = times[^1].Timestamp;
-        int low = 0;
-        int high = times.Count - 1;
+        DateTimeOffset latest = readings[^1].Timestamp;
+        int low = firstRetained;
+        int high = readings.Count - 1;
         while (low < high)
         {
             int middle = low + (high - low) / 2;
-            if (latest - times[middle].Timestamp > visibleWindow)
+            if (latest - readings[middle].Timestamp > visibleWindow)
                 low = middle + 1;
             else
                 high = middle;
@@ -354,34 +400,36 @@ public sealed class HeartRateChart : Control
     private List<ChartBucket> BuildBuckets(int firstVisible)
     {
         long intervalTicks = BucketDuration().Ticks;
-        var times = readings.Keys;
-        IList<ChartReading> samples = readings.Values;
         var buckets = new List<ChartBucket>();
         int first = firstVisible;
         bool startsTrace = true;
-        while (first < samples.Count)
+        while (first < readings.Count)
         {
-            long bucketNumber = times[first].Timestamp.UtcTicks / intervalTicks;
-            int minimum = samples[first].Bpm;
+            ChartReading firstReading = readings[first];
+            long priorTicks = firstReading.Timestamp.UtcTicks;
+            long bucketEndTicks = (priorTicks / intervalTicks + 1) * intervalTicks;
+            int minimum = firstReading.Bpm;
             int maximum = minimum;
             long sum = minimum;
             int next = first + 1;
             bool breakTrace = false;
-            for (; next < samples.Count; next++)
+            for (; next < readings.Count; next++)
             {
-                DateTimeOffset timestamp = times[next].Timestamp;
-                breakTrace = samples[next].Trace != samples[next - 1].Trace || timestamp - times[next - 1].Timestamp > TraceGap;
-                if (breakTrace || timestamp.UtcTicks / intervalTicks != bucketNumber)
+                ChartReading reading = readings[next];
+                long ticks = reading.Timestamp.UtcTicks;
+                breakTrace = reading.Trace != firstReading.Trace || ticks - priorTicks > TraceGap.Ticks;
+                if (breakTrace || ticks >= bucketEndTicks)
                     break;
 
-                int bpm = samples[next].Bpm;
+                int bpm = reading.Bpm;
                 minimum = Math.Min(minimum, bpm);
                 maximum = Math.Max(maximum, bpm);
                 sum += bpm;
+                priorTicks = ticks;
             }
 
             buckets.Add(new ChartBucket(
-                times[first].Timestamp, times[next - 1].Timestamp, minimum, maximum, (double)sum / (next - first), startsTrace));
+                firstReading.Timestamp, readings[next - 1].Timestamp, minimum, maximum, (double)sum / (next - first), startsTrace));
             first = next;
             startsTrace = breakTrace;
         }
@@ -451,6 +499,8 @@ public sealed class HeartRateChart : Control
             string label = seconds switch
             {
                 0 => "Latest",
+                _ when seconds % 3600 == 0 => $"−{seconds / 3600} h",
+                >= 3600 => $"−{seconds / 3600} h {seconds % 3600 / 60} min",
                 _ when seconds % 60 == 0 => $"−{seconds / 60} min",
                 _ => $"−{seconds} s"
             };
